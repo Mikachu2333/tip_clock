@@ -16,10 +16,6 @@ use tray_icon::{
 use audio::AudioPlayer;
 use config::Config;
 
-// ---------------------------------------------------------------------------
-// Direct Win32 FFI — user32.dll
-// ---------------------------------------------------------------------------
-
 const MB_OK: u32 = 0x0000_0000;
 const MB_ICONERROR: u32 = 0x0000_0010;
 const PM_REMOVE: u32 = 1;
@@ -67,7 +63,6 @@ unsafe extern "system" {
     ) -> u32;
 }
 
-/// Show an error popup and exit immediately.
 fn fatal(msg: &str) -> ! {
     let text = audio::to_wide(msg);
     let caption = audio::to_wide("Tip Clock — Fatal Error");
@@ -82,32 +77,18 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Global state — initialised synchronously in main().
-// ---------------------------------------------------------------------------
-
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static AUDIO: OnceLock<AudioPlayer> = OnceLock::new();
-
-// ---------------------------------------------------------------------------
-// Schedule helpers
-// ---------------------------------------------------------------------------
 
 fn next_label() -> String {
     let now = Local::now();
     let cfg = CONFIG.get().unwrap();
     match cfg.next_reminder(now.hour(), now.minute()) {
-        Some((h, m, ring, _)) => format!("Next  {:02}:{:02}  ({})", h, m, ring.display_name()),
+        Some((h, m, ring)) => format!("Next  {:02}:{:02}  ({})", h, m, ring.display_name()),
         None => "No more reminders today".into(),
     }
 }
 
-// ---------------------------------------------------------------------------
-// Windows message pump
-// ---------------------------------------------------------------------------
-
-/// Drain all pending Windows messages so tray-icon's hidden window
-/// receives `WM_USER_TRAYICON` callbacks from `Shell_NotifyIcon`.
 fn pump_messages() {
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
@@ -124,40 +105,29 @@ fn pump_messages() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
 fn main() {
     let instance = SingleInstance::new("6C682EA23C8753664AAD9A6198C672AD").unwrap();
     if !instance.is_single() {
         std::process::exit(1);
     }
 
-    // ---- 1. Load config synchronously (no lazy init, no threads) ----------
     let config = Config::load_or_create().unwrap_or_else(|e| fatal(&e.to_string()));
     CONFIG.set(config).ok();
 
-    // ---- 2. Init audio player ---------------------------------------------
     let audio = AudioPlayer::new();
     AUDIO.set(audio).ok();
 
     let cfg = CONFIG.get().unwrap();
     let audio = AUDIO.get().unwrap();
 
-    // ---- 3. Event handlers (set before tray creation) -------------------
-
-    // Right-click menu "Exit" → quit.
     MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| {
         if event.id == "exit" {
             std::process::exit(0);
         }
     })));
 
-    // ---- 4. Tray right-click context menu --------------------------
-
-    let next_item = MenuItem::new(next_label(), false, None); // disabled → display only
-    let exit_item = MenuItem::with_id("exit", "Exit", true, None); // enabled
+    let next_item = MenuItem::new(next_label(), false, None);
+    let exit_item = MenuItem::with_id("exit", "Exit", true, None);
     let separator = PredefinedMenuItem::separator();
 
     let menu = Menu::new();
@@ -181,23 +151,17 @@ fn main() {
         .build()
         .unwrap_or_else(|e| fatal(&format!("Tray icon: {e}")));
 
-    // ---- 5. Main loop — message pump + time checking ---------------------
-
     let mut last_played: Option<(u32, u32)> = None;
     let mut last_refresh = std::time::Instant::now();
 
     loop {
-        // Drain all pending Windows messages so tray-icon's hidden window
-        // receives WM_USER_TRAYICON callbacks from Shell_NotifyIcon.
         pump_messages();
 
-        // ----- fire matching schedule entries once per minute -----
         let now = Local::now();
         let current = (now.hour(), now.minute());
 
         if last_played != Some(current) {
             last_played = Some(current);
-            // Schedule is sorted by time — stop once we pass the current minute.
             for entry in &cfg.schedule {
                 match config::parse_hhmm(&entry.time) {
                     Some(t) if t == current => audio.play(entry.ring),
@@ -207,7 +171,6 @@ fn main() {
             }
         }
 
-        // ----- refresh tooltip + menu text every ~30 s -----
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             last_refresh = std::time::Instant::now();
             let label = next_label();
@@ -215,8 +178,6 @@ fn main() {
             next_item.set_text(&label);
         }
 
-        // Wait for new Windows messages, or wake every N seconds to
-        // check the schedule.  QS_ALLINPUT wakes on any message.
         let timeout_ms = (cfg.interval_secs.max(10)) * 1000;
         unsafe {
             MsgWaitForMultipleObjects(0, std::ptr::null(), 0, timeout_ms, QS_ALLINPUT);
