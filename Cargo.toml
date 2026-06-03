@@ -1,0 +1,11 @@
+[package]
+name = "tip_clock"
+version = "0.1.1"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4"
+toml = "1.1.2"
+serde = { version = "1.0.228", features = ["derive"] }
+tray-icon = "0.24.0"
+single-instance = "0.3.3"
