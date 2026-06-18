@@ -4,6 +4,7 @@ mod audio;
 mod config;
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::{Local, Timelike};
@@ -61,6 +62,23 @@ unsafe extern "system" {
         milliseconds: u32,
         wake_mask: u32,
     ) -> u32;
+
+    fn SetProcessDPIAware() -> i32;
+}
+
+const PROCESS_PER_MONITOR_DPI_AWARE: i32 = 2;
+
+#[link(name = "shcore")]
+unsafe extern "system" {
+    fn SetProcessDpiAwareness(value: i32) -> i32;
+}
+
+fn set_dpi_aware() {
+    unsafe {
+        if SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) != 0 {
+            let _ = SetProcessDPIAware();
+        }
+    }
 }
 
 fn fatal(msg: &str) -> ! {
@@ -79,6 +97,8 @@ fn fatal(msg: &str) -> ! {
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static AUDIO: OnceLock<AudioPlayer> = OnceLock::new();
+static SKIP_NEXT: OnceLock<AtomicBool> = OnceLock::new();
+static PAUSED: OnceLock<AtomicBool> = OnceLock::new();
 
 fn next_label() -> String {
     let now = Local::now();
@@ -106,7 +126,10 @@ fn pump_messages() {
 }
 
 fn main() {
-    let instance = SingleInstance::new("6C682EA23C8753664AAD9A6198C672AD").unwrap();
+    set_dpi_aware();
+
+    let instance = SingleInstance::new("6C682EA23C8753664AAD9A6198C672AD")
+        .unwrap_or_else(|e| fatal(&e.to_string()));
     if !instance.is_single() {
         std::process::exit(1);
     }
@@ -117,22 +140,36 @@ fn main() {
     let audio = AudioPlayer::new();
     AUDIO.set(audio).ok();
 
+    SKIP_NEXT.set(AtomicBool::new(false)).ok();
+    PAUSED.set(AtomicBool::new(false)).ok();
+
     let cfg = CONFIG.get().unwrap();
     let audio = AUDIO.get().unwrap();
 
-    MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| {
-        if event.id == "exit" {
-            std::process::exit(0);
-        }
-    })));
-
     let next_item = MenuItem::new(next_label(), false, None);
+    let skip_item = MenuItem::with_id("skip_next", "Skip next", true, None);
+    let pause_item = MenuItem::with_id("toggle_pause", "Pause", true, None);
     let exit_item = MenuItem::with_id("exit", "Exit", true, None);
-    let separator = PredefinedMenuItem::separator();
+    let sep = PredefinedMenuItem::separator();
+
+    MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| match event.id.as_ref() {
+        "exit" => std::process::exit(0),
+        "skip_next" => {
+            SKIP_NEXT.get().unwrap().store(true, Ordering::Relaxed);
+        }
+        "toggle_pause" => {
+            let paused = PAUSED.get().unwrap();
+            paused.store(!paused.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        _ => {}
+    })));
 
     let menu = Menu::new();
     menu.append(&next_item).ok();
-    menu.append(&separator).ok();
+    menu.append(&sep).ok();
+    menu.append(&skip_item).ok();
+    menu.append(&pause_item).ok();
+    menu.append(&sep).ok();
     menu.append(&exit_item).ok();
 
     let icon = {
@@ -162,11 +199,29 @@ fn main() {
 
         if last_played != Some(current) {
             last_played = Some(current);
-            for entry in &cfg.schedule {
-                match config::parse_hhmm(&entry.time) {
-                    Some(t) if t == current => audio.play(entry.ring),
-                    Some(t) if t > current => break,
-                    _ => {}
+
+            let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
+            let do_skip = if paused {
+                true
+            } else {
+                let has_match = cfg
+                    .schedule
+                    .iter()
+                    .any(|e| config::parse_hhmm(&e.time) == Some(current));
+                if has_match {
+                    SKIP_NEXT.get().unwrap().swap(false, Ordering::Relaxed)
+                } else {
+                    false
+                }
+            };
+
+            if !do_skip {
+                for entry in &cfg.schedule {
+                    match config::parse_hhmm(&entry.time) {
+                        Some(t) if t == current => audio.play(entry.ring),
+                        Some(t) if t > current => break,
+                        _ => {}
+                    }
                 }
             }
         }
@@ -176,6 +231,11 @@ fn main() {
             let label = next_label();
             tray.set_tooltip(Some(&label)).ok();
             next_item.set_text(&label);
+            pause_item.set_text(if PAUSED.get().unwrap().load(Ordering::Relaxed) {
+                "Resume"
+            } else {
+                "Pause"
+            });
         }
 
         let timeout_ms = (cfg.interval_secs.max(10)) * 1000;
