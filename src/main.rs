@@ -4,13 +4,13 @@ mod audio;
 mod config;
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use chrono::{Local, Timelike};
 use single_instance::SingleInstance;
 use tray_icon::{
-    TrayIconBuilder,
+    TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 
@@ -97,8 +97,9 @@ fn fatal(msg: &str) -> ! {
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static AUDIO: OnceLock<AudioPlayer> = OnceLock::new();
-static SKIP_NEXT: OnceLock<AtomicBool> = OnceLock::new();
+static SKIP_COUNT: OnceLock<AtomicU32> = OnceLock::new();
 static PAUSED: OnceLock<AtomicBool> = OnceLock::new();
+static NEED_REFRESH: OnceLock<AtomicBool> = OnceLock::new();
 
 fn next_label() -> String {
     let now = Local::now();
@@ -106,6 +107,49 @@ fn next_label() -> String {
     match cfg.next_reminder(now.hour(), now.minute()) {
         Some((h, m, ring)) => format!("Next  {:02}:{:02}  ({})", h, m, ring.display_name()),
         None => "No more reminders today".into(),
+    }
+}
+
+fn next_after_skip_label() -> String {
+    let now = Local::now();
+    let cfg = CONFIG.get().unwrap();
+    let count = SKIP_COUNT.get().unwrap().load(Ordering::Relaxed);
+
+    let mut h = now.hour();
+    let mut m = now.minute();
+
+    for i in 0..=count {
+        match cfg.next_reminder(h, m) {
+            Some((h2, m2, ring)) => {
+                h = h2;
+                m = m2;
+                if i == count {
+                    return format!("Next  {:02}:{:02}  ({})", h, m, ring.display_name());
+                }
+            }
+            None => return "No more reminders today".into(),
+        }
+    }
+    "No more reminders today".into()
+}
+
+fn refresh_menu_items(
+    tray: &TrayIcon,
+    next_item: &MenuItem,
+    pause_item: &MenuItem,
+    skip_item: &MenuItem,
+) {
+    let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
+    if paused {
+        tray.set_tooltip(Some("Tip Clock — Paused")).ok();
+        next_item.set_text("None (paused)");
+        skip_item.set_enabled(false);
+        pause_item.set_text("Resume");
+    } else {
+        next_item.set_text(&next_label());
+        skip_item.set_enabled(true);
+        pause_item.set_text("Pause");
+        tray.set_tooltip(Some(&next_label())).ok();
     }
 }
 
@@ -140,8 +184,9 @@ fn main() {
     let audio = AudioPlayer::new();
     AUDIO.set(audio).ok();
 
-    SKIP_NEXT.set(AtomicBool::new(false)).ok();
+    SKIP_COUNT.set(AtomicU32::new(0)).ok();
     PAUSED.set(AtomicBool::new(false)).ok();
+    NEED_REFRESH.set(AtomicBool::new(false)).ok();
 
     let cfg = CONFIG.get().unwrap();
     let audio = AUDIO.get().unwrap();
@@ -155,11 +200,13 @@ fn main() {
     MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| match event.id.as_ref() {
         "exit" => std::process::exit(0),
         "skip_next" => {
-            SKIP_NEXT.get().unwrap().store(true, Ordering::Relaxed);
+            SKIP_COUNT.get().unwrap().fetch_add(1, Ordering::Relaxed);
+            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
         }
         "toggle_pause" => {
             let paused = PAUSED.get().unwrap();
             paused.store(!paused.load(Ordering::Relaxed), Ordering::Relaxed);
+            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
         }
         _ => {}
     })));
@@ -194,6 +241,22 @@ fn main() {
     loop {
         pump_messages();
 
+        // Immediate menu refresh when state changes (skip / pause toggled).
+        if NEED_REFRESH.get().unwrap().swap(false, Ordering::Relaxed) {
+            if PAUSED.get().unwrap().load(Ordering::Relaxed) {
+                refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
+            } else if SKIP_COUNT.get().unwrap().load(Ordering::Relaxed) > 0 {
+                let label = next_after_skip_label();
+                tray.set_tooltip(Some(&label)).ok();
+                next_item.set_text(&label);
+                skip_item.set_enabled(true);
+                pause_item.set_text("Pause");
+            } else {
+                refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
+            }
+            last_refresh = std::time::Instant::now();
+        }
+
         let now = Local::now();
         let current = (now.hour(), now.minute());
 
@@ -209,7 +272,13 @@ fn main() {
                     .iter()
                     .any(|e| config::parse_hhmm(&e.time) == Some(current));
                 if has_match {
-                    SKIP_NEXT.get().unwrap().swap(false, Ordering::Relaxed)
+                    let count = SKIP_COUNT.get().unwrap();
+                    let prev = count.fetch_update(
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                        |v| if v > 0 { Some(v - 1) } else { None },
+                    );
+                    prev.is_ok()
                 } else {
                     false
                 }
@@ -224,18 +293,14 @@ fn main() {
                     }
                 }
             }
+
+            // Minute changed — refresh menu in case skip was consumed.
+            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
         }
 
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             last_refresh = std::time::Instant::now();
-            let label = next_label();
-            tray.set_tooltip(Some(&label)).ok();
-            next_item.set_text(&label);
-            pause_item.set_text(if PAUSED.get().unwrap().load(Ordering::Relaxed) {
-                "Resume"
-            } else {
-                "Pause"
-            });
+            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
         }
 
         let timeout_ms = (cfg.interval_secs.max(10)) * 1000;
