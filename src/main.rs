@@ -81,6 +81,17 @@ fn set_dpi_aware() {
     }
 }
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AttachConsole(dwProcessId: u32) -> i32;
+}
+
+fn try_attach_console() {
+    unsafe {
+        AttachConsole(0xFFFF_FFFF); // ATTACH_PARENT_PROCESS
+    }
+}
+
 fn fatal(msg: &str) -> ! {
     let text = audio::to_wide(msg);
     let caption = audio::to_wide("Tip Clock — Fatal Error");
@@ -170,6 +181,7 @@ fn pump_messages() {
 }
 
 fn main() {
+    try_attach_console();
     set_dpi_aware();
 
     let instance = SingleInstance::new("6C682EA23C8753664AAD9A6198C672AD")
@@ -273,11 +285,9 @@ fn main() {
                     .any(|e| config::parse_hhmm(&e.time) == Some(current));
                 if has_match {
                     let count = SKIP_COUNT.get().unwrap();
-                    let prev = count.fetch_update(
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                        |v| if v > 0 { Some(v - 1) } else { None },
-                    );
+                    let prev = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                        if v > 0 { Some(v - 1) } else { None }
+                    });
                     prev.is_ok()
                 } else {
                     false
