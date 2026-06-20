@@ -52,15 +52,15 @@ impl Config {
     pub fn load_or_create() -> Result<Self, Box<dyn std::error::Error>> {
         let dir = std::env::current_exe()?
             .parent()
-            .ok_or("cannot determine executable directory")?
+            .ok_or("ERROR: EXE Parent Dir NOT FOUND")?
             .to_path_buf();
         let path = dir.join("config.toml");
 
         if path.exists() {
             let raw = std::fs::read_to_string(path)?;
-            let fixed = raw.replace('\u{FF1A}', ":");
+            let fixed = raw.replace('：', ":");
             let mut cfg: Config =
-                toml::from_str(&fixed).map_err(|e| format!("Failed to parse config.toml: {e}"))?;
+                toml::from_str(&fixed).map_err(|e| format!("ERROR: Failed to parse config.toml: {e}"))?;
 
             cfg.schedule.retain_mut(|entry| {
                 if let Some((h, m)) = parse_hhmm(&entry.time) {
