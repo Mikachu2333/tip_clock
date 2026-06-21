@@ -2,8 +2,6 @@
 # Each entry: time = "HH:MM", ring = "start" | "end" | "special"
 # Edit this file and restart the program to apply changes.
 
-interval_secs = 30
-
 [[schedule]]
 time = "08:00"
 ring = "start"

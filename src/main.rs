@@ -19,6 +19,7 @@ use config::Config;
 
 const MB_OK: u32 = 0x0000_0000;
 const MB_ICONERROR: u32 = 0x0000_0010;
+const INTERVAL_SECS: u32 = 15;
 const PM_REMOVE: u32 = 1;
 const QS_ALLINPUT: u32 = 0x04FF;
 const WM_QUIT: u32 = 0x0012;
@@ -184,7 +185,7 @@ fn main() {
     try_attach_console();
     set_dpi_aware();
 
-    let instance = SingleInstance::new("6C682EA23C8753664AAD9A6198C672AD")
+    let instance = SingleInstance::new("A77674028D8A4C85BD5A61AD4E30E56C")
         .unwrap_or_else(|e| fatal(&e.to_string()));
     if !instance.is_single() {
         std::process::exit(1);
@@ -308,14 +309,13 @@ fn main() {
             refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
         }
 
-        if last_refresh.elapsed() >= Duration::from_secs(30) {
+        if last_refresh.elapsed() >= Duration::from_secs(INTERVAL_SECS as u64) {
             last_refresh = std::time::Instant::now();
             refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
         }
 
-        let timeout_ms = (cfg.interval_secs.max(10)) * 1000;
         unsafe {
-            MsgWaitForMultipleObjects(0, std::ptr::null(), 0, timeout_ms, QS_ALLINPUT);
+            MsgWaitForMultipleObjects(0, std::ptr::null(), 0, INTERVAL_SECS * 1000, QS_ALLINPUT);
         }
     }
 }

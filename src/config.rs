@@ -36,16 +36,10 @@ struct ParsedEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_interval")]
-    pub interval_secs: u32,
     #[serde(default)]
     pub schedule: Vec<ScheduleEntry>,
     #[serde(skip)]
     entries: Vec<ParsedEntry>,
-}
-
-fn default_interval() -> u32 {
-    30
 }
 
 impl Config {
@@ -59,8 +53,8 @@ impl Config {
         if path.exists() {
             let raw = std::fs::read_to_string(path)?;
             let fixed = raw.replace('：', ":");
-            let mut cfg: Config =
-                toml::from_str(&fixed).map_err(|e| format!("ERROR: Failed to parse config.toml: {e}"))?;
+            let mut cfg: Config = toml::from_str(&fixed)
+                .map_err(|e| format!("ERROR: Failed to parse config.toml: {e}"))?;
 
             cfg.schedule.retain_mut(|entry| {
                 if let Some((h, m)) = parse_hhmm(&entry.time) {
@@ -119,7 +113,6 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            interval_secs: 30,
             schedule: default_schedule(),
             entries: Vec::new(),
         }
@@ -134,8 +127,37 @@ pub fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
 }
 
 fn default_schedule() -> Vec<ScheduleEntry> {
-    vec![ScheduleEntry {
-        time: "10:02".into(),
-        ring: RingType::Special,
-    }]
+    let _ = std::fs::write(
+        "config.toml",
+        r#"# Tip Clock — schedule configuration
+# Each entry: time = "HH:MM", ring = "start" | "end" | "special"
+# Edit this file and restart the program to apply changes.
+
+[[schedule]]
+time = "08:00"
+ring = "start"
+
+[[schedule]]
+time = "08:45"
+ring = "end"
+
+[[schedule]]
+time = "09:40"
+ring = "special"
+"#,
+    );
+    vec![
+        ScheduleEntry {
+            time: "08:00".into(),
+            ring: RingType::Start,
+        },
+        ScheduleEntry {
+            time: "08:45".into(),
+            ring: RingType::End,
+        },
+        ScheduleEntry {
+            time: "09:00".into(),
+            ring: RingType::Special,
+        },
+    ]
 }
