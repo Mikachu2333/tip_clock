@@ -158,7 +158,7 @@ fn refresh_menu_items(
         skip_item.set_enabled(false);
         pause_item.set_text("Resume");
     } else {
-        next_item.set_text(&next_label());
+        next_item.set_text(next_label());
         skip_item.set_enabled(true);
         pause_item.set_text("Pause");
         tray.set_tooltip(Some(&next_label())).ok();
