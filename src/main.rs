@@ -158,10 +158,11 @@ fn refresh_menu_items(
         skip_item.set_enabled(false);
         pause_item.set_text("Resume");
     } else {
-        next_item.set_text(next_label());
+        let label = next_label();
+        next_item.set_text(&label);
         skip_item.set_enabled(true);
         pause_item.set_text("Pause");
-        tray.set_tooltip(Some(&next_label())).ok();
+        tray.set_tooltip(Some(&label)).ok();
     }
 }
 
@@ -217,8 +218,7 @@ fn main() {
             NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
         }
         "toggle_pause" => {
-            let paused = PAUSED.get().unwrap();
-            paused.store(!paused.load(Ordering::Relaxed), Ordering::Relaxed);
+            PAUSED.get().unwrap().fetch_not(Ordering::Relaxed);
             NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
         }
         _ => {}

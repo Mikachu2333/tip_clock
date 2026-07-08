@@ -127,25 +127,6 @@ pub fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
 }
 
 fn default_schedule() -> Vec<ScheduleEntry> {
-    let _ = std::fs::write(
-        "config.toml",
-        r#"# Tip Clock — schedule configuration
-# Each entry: time = "HH:MM", ring = "start" | "end" | "special"
-# Edit this file and restart the program to apply changes.
-
-[[schedule]]
-time = "08:00"
-ring = "start"
-
-[[schedule]]
-time = "08:45"
-ring = "end"
-
-[[schedule]]
-time = "09:40"
-ring = "special"
-"#,
-    );
     vec![
         ScheduleEntry {
             time: "08:00".into(),
@@ -156,7 +137,7 @@ ring = "special"
             ring: RingType::End,
         },
         ScheduleEntry {
-            time: "09:00".into(),
+            time: "09:40".into(),
             ring: RingType::Special,
         },
     ]
