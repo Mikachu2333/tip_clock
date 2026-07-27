@@ -14,7 +14,7 @@ use std::time::Duration;
 use chrono::{Local, Timelike};
 use single_instance::SingleInstance;
 use tray_icon::{
-    TrayIcon, TrayIconBuilder, TrayIconEvent,
+    TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 
@@ -515,7 +515,7 @@ fn main() {
 
     // Config
     let config = Config::load_or_create().unwrap_or_else(|e| fatal(&e));
-    if DEBUG_MODE{
+    if DEBUG_MODE {
         dbg!(&config);
     }
 
@@ -531,9 +531,15 @@ fn main() {
     gui::create_clock_window(&config.general).unwrap_or_else(|e| fatal(&e));
     let gui_hwnd = gui::get_hwnd();
 
-    // Hotkey
-    hotkey::HotKey::init(&config.general.hotkey_mod, &config.general.hotkey_key);
-    hotkey::HotKey::register(gui_hwnd);
+    // Hotkey — dedicated hidden window for reliable WM_HOTKEY delivery
+    hotkey::init(
+        &config.general.hotkey_mod,
+        &config.general.hotkey_key,
+        gui_hwnd,
+    )
+    .unwrap_or_else(|e| {
+        audio::debug_log(&format!("[tip_clock] hotkey init failed: {e}\n"));
+    });
 
     CONFIG.set(std::sync::Mutex::new(config)).ok();
     AUDIO.set(audio).ok();
@@ -567,8 +573,6 @@ fn main() {
 
     MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| match event.id.as_ref() {
         "exit" => {
-            let hwnd = gui::get_hwnd();
-            hotkey::HotKey::unregister(hwnd);
             std::process::exit(0);
         }
         "skip_next" => {
@@ -604,22 +608,6 @@ fn main() {
         _ => {}
     })));
 
-    // Handle left click on tray icon: toggle clock window
-    TrayIconEvent::set_event_handler(Some(Box::new(|event: TrayIconEvent| {
-        if let TrayIconEvent::Click {
-            button: tray_icon::MouseButton::Left,
-            ..
-        } = event
-        {
-            if gui::is_visible() {
-                gui::hide_clock();
-            } else {
-                gui::show_clock();
-            }
-            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
-        }
-    })));
-
     let menu = Menu::new();
     menu.append(&next_item).ok();
     menu.append(&sep).ok();
@@ -641,9 +629,31 @@ fn main() {
         .with_icon(icon)
         .with_tooltip(app_name)
         .with_menu(Box::new(menu))
-        .with_menu_on_right_click(true)
         .build()
         .unwrap_or_else(|e| fatal(&format!("Tray icon: {e}")));
+
+    // Left click → toggle clock; right click → show menu.
+    // By default, tray-icon shows menu on both clicks. Disable left-click menu.
+    tray.set_show_menu_on_left_click(false);
+
+    // TrayIconEvent for left-click toggle. Only matching Left button ensures
+    // right-click still triggers the context menu via the default handling.
+    tray_icon::TrayIconEvent::set_event_handler(Some(Box::new(
+        |event: tray_icon::TrayIconEvent| {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                ..
+            } = event
+            {
+                if gui::is_visible() {
+                    gui::hide_clock();
+                } else {
+                    gui::show_clock();
+                }
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+        },
+    )));
 
     // ── Main loop ──────────────────────────────
 
@@ -676,7 +686,7 @@ fn main() {
                 // Update audio volume
                 AUDIO.get().unwrap().set_volume(cfg.general.volume);
                 // Update hotkey
-                hotkey::HotKey::update(gui_hwnd, &cfg.general.hotkey_mod, &cfg.general.hotkey_key);
+                hotkey::update(&cfg.general.hotkey_mod, &cfg.general.hotkey_key);
                 // Update GUI config
                 gui::update_config(&cfg.general);
                 // Update auto-start

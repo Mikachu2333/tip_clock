@@ -51,6 +51,7 @@ const AW_HIDE: u32 = 0x0001_0000;
 const TRANSPARENT: i32 = 1;
 
 const WM_HOTKEY: u32 = 0x0312;
+const WM_USER_HOTKEY: u32 = 0x0401; // custom: posted by hotkey window
 const WM_NULL: u32 = 0x0000;
 const WM_TIMER: u32 = 0x0113;
 const WM_LBUTTONDOWN: u32 = 0x0201;
@@ -319,7 +320,7 @@ unsafe extern "system" fn clock_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_HOTKEY => {
+        WM_HOTKEY | WM_USER_HOTKEY => {
             if is_visible() {
                 hide_clock();
             } else {
@@ -374,7 +375,9 @@ unsafe extern "system" fn clock_wndproc(
 
         WM_RBUTTONUP => {
             // Show a popup context menu on the clock window
-            unsafe { show_clock_context_menu(hwnd, lparam); }
+            unsafe {
+                show_clock_context_menu(hwnd, lparam);
+            }
             return 0;
         }
 
@@ -871,9 +874,13 @@ pub fn update_font(cfg: &GeneralConfig) {
                 let font_wide = to_wide(&cfg.font_name);
                 let new_font = CreateFontW(
                     font_size,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     FW_NORMAL,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     DEFAULT_CHARSET as u32,
                     OUT_DEFAULT_PRECIS as u32,
                     CLIP_DEFAULT_PRECIS as u32,
