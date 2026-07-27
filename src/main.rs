@@ -1,7 +1,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![allow(clippy::upper_case_acronyms)]
 
 mod audio;
 mod config;
+mod gui;
+mod hotkey;
+mod i18n;
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -10,12 +14,19 @@ use std::time::Duration;
 use chrono::{Local, Timelike};
 use single_instance::SingleInstance;
 use tray_icon::{
-    TrayIcon, TrayIconBuilder,
+    TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 
 use audio::AudioPlayer;
-use config::Config;
+use config::{Config, RingType};
+
+const DEBUG_MODE: bool = cfg!(debug_assertions);
+const PROCESS_GUID: &str = "F44E29E669346E0CC3105EA440E85C00";
+
+// ───────────────────────────────────────────────
+//  Win32 constants & types
+// ───────────────────────────────────────────────
 
 const MB_OK: u32 = 0x0000_0000;
 const MB_ICONERROR: u32 = 0x0000_0010;
@@ -24,10 +35,86 @@ const PM_REMOVE: u32 = 1;
 const QS_ALLINPUT: u32 = 0x04FF;
 const WM_QUIT: u32 = 0x0012;
 
-#[allow(clippy::upper_case_acronyms)]
+type HWND = *mut std::ffi::c_void;
+
+// ───────────────────────────────────────────────
+//  ChooseFont / ChooseColor dialog structures
+// ───────────────────────────────────────────────
+
+#[allow(dead_code)]
+#[repr(C)]
+struct LOGFONTW {
+    lf_height: i32,
+    lf_width: i32,
+    lf_escapement: i32,
+    lf_orientation: i32,
+    lf_weight: i32,
+    lf_italic: u8,
+    lf_underline: u8,
+    lf_strike_out: u8,
+    lf_char_set: u8,
+    lf_out_precision: u8,
+    lf_clip_precision: u8,
+    lf_quality: u8,
+    lf_pitch_and_family: u8,
+    lf_face_name: [u16; 32],
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+struct CHOOSEFONTW {
+    l_struct_size: u32,
+    hwnd_owner: HWND,
+    hdc: *mut std::ffi::c_void,
+    lp_log_font: *mut LOGFONTW,
+    i_point_size: i32,
+    flags: u32,
+    rgb_colors: u32,
+    l_cust_data: isize,
+    lpfn_hook: *mut std::ffi::c_void,
+    lp_template_name: *const u16,
+    h_instance: *mut std::ffi::c_void,
+    lpsz_style: *const u16,
+    n_font_type: u16,
+    ___missing_alignment: u16,
+    n_size_min: i32,
+    n_size_max: i32,
+}
+
+const CF_SCREENFONTS: u32 = 0x0000_0001;
+const CF_INITTOLOGFONTSTRUCT: u32 = 0x0000_0040;
+const CF_TTONLY: u32 = 0x0004_0000;
+
+#[allow(dead_code)]
+#[repr(C)]
+struct CHOOSECOLORW {
+    l_struct_size: u32,
+    hwnd_owner: HWND,
+    h_instance: *mut std::ffi::c_void,
+    rgb_result: u32,
+    lp_cust_colors: *mut u32,
+    flags: u32,
+    l_cust_data: isize,
+    lpfn_hook: *mut std::ffi::c_void,
+    lp_template_name: *const u16,
+}
+
+const CC_RGBINIT: u32 = 0x0000_0001;
+const CC_FULLOPEN: u32 = 0x0000_0002;
+
+#[link(name = "comdlg32")]
+unsafe extern "system" {
+    fn ChooseFontW(lpcf: *mut CHOOSEFONTW) -> i32;
+    fn ChooseColorW(lpcc: *mut CHOOSECOLORW) -> i32;
+}
+
+// ───────────────────────────────────────────────
+//  Message struct
+// ───────────────────────────────────────────────
+
 #[repr(C)]
 struct MSG {
-    hwnd: *mut std::ffi::c_void,
+    hwnd: HWND,
     message: u32,
     wparam: usize,
     lparam: isize,
@@ -37,16 +124,11 @@ struct MSG {
 
 #[link(name = "user32")]
 unsafe extern "system" {
-    fn MessageBoxW(
-        hwnd: *mut std::ffi::c_void,
-        text: *const u16,
-        caption: *const u16,
-        utype: u32,
-    ) -> i32;
+    fn MessageBoxW(hwnd: HWND, text: *const u16, caption: *const u16, utype: u32) -> i32;
 
     fn PeekMessageW(
         msg: *mut MSG,
-        hwnd: *mut std::ffi::c_void,
+        hwnd: HWND,
         msg_filter_min: u32,
         msg_filter_max: u32,
         remove_msg: u32,
@@ -58,7 +140,7 @@ unsafe extern "system" {
 
     fn MsgWaitForMultipleObjects(
         count: u32,
-        handles: *const *mut std::ffi::c_void,
+        handles: *const HWND,
         wait_all: i32,
         milliseconds: u32,
         wake_mask: u32,
@@ -107,24 +189,39 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-static CONFIG: OnceLock<Config> = OnceLock::new();
+// ───────────────────────────────────────────────
+//  Global state
+// ───────────────────────────────────────────────
+
+static CONFIG: OnceLock<std::sync::Mutex<Config>> = OnceLock::new();
 static AUDIO: OnceLock<AudioPlayer> = OnceLock::new();
 static SKIP_COUNT: OnceLock<AtomicU32> = OnceLock::new();
 static PAUSED: OnceLock<AtomicBool> = OnceLock::new();
 static NEED_REFRESH: OnceLock<AtomicBool> = OnceLock::new();
 
-fn next_label() -> String {
+// ───────────────────────────────────────────────
+//  Menu helpers
+// ───────────────────────────────────────────────
+
+fn next_label(cfg: &Config) -> String {
     let now = Local::now();
-    let cfg = CONFIG.get().unwrap();
     match cfg.next_reminder(now.hour(), now.minute()) {
-        Some((h, m, ring)) => format!("Next  {:02}:{:02}  ({})", h, m, ring.display_name()),
-        None => "No more reminders today".into(),
+        Some((h, m, ring)) => {
+            format!(
+                "{}  {:02}:{:02}  ({})",
+                i18n::tr(i18n::TrKey::NextReminder),
+                h,
+                m,
+                ring.display_name()
+            )
+        }
+        None => i18n::tr(i18n::TrKey::NoMoreReminders).to_string(),
     }
 }
 
-fn next_after_skip_label() -> String {
+#[allow(dead_code)]
+fn next_after_skip_label(cfg: &Config) -> String {
     let now = Local::now();
-    let cfg = CONFIG.get().unwrap();
     let count = SKIP_COUNT.get().unwrap().load(Ordering::Relaxed);
 
     let mut h = now.hour();
@@ -136,13 +233,19 @@ fn next_after_skip_label() -> String {
                 h = h2;
                 m = m2;
                 if i == count {
-                    return format!("Next  {:02}:{:02}  ({})", h, m, ring.display_name());
+                    return format!(
+                        "{}  {:02}:{:02}  ({})",
+                        i18n::tr(i18n::TrKey::NextReminder),
+                        h,
+                        m,
+                        ring.display_name()
+                    );
                 }
             }
-            None => return "No more reminders today".into(),
+            None => return i18n::tr(i18n::TrKey::NoMoreReminders).to_string(),
         }
     }
-    "No more reminders today".into()
+    i18n::tr(i18n::TrKey::NoMoreReminders).to_string()
 }
 
 fn refresh_menu_items(
@@ -150,21 +253,39 @@ fn refresh_menu_items(
     next_item: &MenuItem,
     pause_item: &MenuItem,
     skip_item: &MenuItem,
+    show_item: &MenuItem,
 ) {
+    let cfg = CONFIG.get().unwrap().lock().unwrap();
     let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
+
     if paused {
-        tray.set_tooltip(Some("Tip Clock — Paused")).ok();
-        next_item.set_text("None (paused)");
+        tray.set_tooltip(Some(&format!(
+            "{} — {}",
+            i18n::tr(i18n::TrKey::AppName),
+            i18n::tr(i18n::TrKey::Pause)
+        )))
+        .ok();
+        next_item.set_text(i18n::tr(i18n::TrKey::NoMoreReminders));
         skip_item.set_enabled(false);
-        pause_item.set_text("Resume");
+        pause_item.set_text(i18n::tr(i18n::TrKey::Resume));
     } else {
-        let label = next_label();
+        let label = next_label(&cfg);
+        tray.set_tooltip(Some(&label)).ok();
         next_item.set_text(&label);
         skip_item.set_enabled(true);
-        pause_item.set_text("Pause");
-        tray.set_tooltip(Some(&label)).ok();
+        pause_item.set_text(i18n::tr(i18n::TrKey::Pause));
     }
+
+    show_item.set_text(if gui::is_visible() {
+        format!("{} (visible)", i18n::tr(i18n::TrKey::ShowClock))
+    } else {
+        i18n::tr(i18n::TrKey::ShowClock).to_string()
+    });
 }
+
+// ───────────────────────────────────────────────
+//  Message pump
+// ───────────────────────────────────────────────
 
 fn pump_messages() {
     unsafe {
@@ -182,37 +303,274 @@ fn pump_messages() {
     }
 }
 
+// ───────────────────────────────────────────────
+//  Auto-start (registry)
+// ───────────────────────────────────────────────
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn RegOpenKeyExW(
+        hKey: *mut std::ffi::c_void,
+        lpSubKey: *const u16,
+        ulOptions: u32,
+        samDesired: u32,
+        phkResult: *mut *mut std::ffi::c_void,
+    ) -> i32;
+
+    fn RegSetValueExW(
+        hKey: *mut std::ffi::c_void,
+        lpValueName: *const u16,
+        reserved: u32,
+        dwType: u32,
+        lpData: *const u8,
+        cbData: u32,
+    ) -> i32;
+
+    fn RegDeleteValueW(hKey: *mut std::ffi::c_void, lpValueName: *const u16) -> i32;
+
+    fn RegCloseKey(hKey: *mut std::ffi::c_void) -> i32;
+}
+
+const HKEY_CURRENT_USER: *mut std::ffi::c_void = 0x8000_0001usize as *mut std::ffi::c_void;
+const KEY_SET_VALUE: u32 = 0x0002;
+const KEY_QUERY_VALUE: u32 = 0x0001;
+const REG_SZ: u32 = 1;
+const ERROR_SUCCESS: i32 = 0;
+
+fn update_auto_start(enable: bool) {
+    unsafe {
+        let sub_key = audio::to_wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
+        let value_name = audio::to_wide("TipClock");
+        let mut hkey: *mut std::ffi::c_void = std::ptr::null_mut();
+
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            sub_key.as_ptr(),
+            0,
+            KEY_SET_VALUE | KEY_QUERY_VALUE,
+            &mut hkey,
+        );
+
+        if result != ERROR_SUCCESS {
+            return;
+        }
+
+        if enable {
+            if let Ok(exe_path) = std::env::current_exe() {
+                let path_str = format!("{}", exe_path.display());
+                let wide_path = audio::to_wide(&path_str);
+                RegSetValueExW(
+                    hkey,
+                    value_name.as_ptr(),
+                    0,
+                    REG_SZ,
+                    wide_path.as_ptr() as *const u8,
+                    (wide_path.len() * 2) as u32, // bytes including null
+                );
+            }
+        } else {
+            RegDeleteValueW(hkey, value_name.as_ptr());
+        }
+
+        RegCloseKey(hkey);
+    }
+}
+
+// ───────────────────────────────────────────────
+//  Font & color dialogs
+// ───────────────────────────────────────────────
+
+fn dialog_choose_font() {
+    let mut cfg = CONFIG.get().unwrap().lock().unwrap();
+    let font_name_wide: Vec<u16> = cfg
+        .general
+        .font_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut lf = LOGFONTW {
+        lf_height: -cfg.general.font_size,
+        lf_width: 0,
+        lf_escapement: 0,
+        lf_orientation: 0,
+        lf_weight: 400,
+        lf_italic: 0,
+        lf_underline: 0,
+        lf_strike_out: 0,
+        lf_char_set: 1, // DEFAULT_CHARSET
+        lf_out_precision: 0,
+        lf_clip_precision: 0,
+        lf_quality: 0,
+        lf_pitch_and_family: 0,
+        lf_face_name: [0u16; 32],
+    };
+
+    // Copy font name into lf_face_name
+    let copy_len = (font_name_wide.len() - 1).min(31);
+    lf.lf_face_name[..copy_len].copy_from_slice(&font_name_wide[..copy_len]);
+
+    let mut cf = CHOOSEFONTW {
+        l_struct_size: std::mem::size_of::<CHOOSEFONTW>() as u32,
+        hwnd_owner: std::ptr::null_mut(),
+        hdc: std::ptr::null_mut(),
+        lp_log_font: &mut lf,
+        i_point_size: 0,
+        flags: CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_TTONLY,
+        rgb_colors: 0,
+        l_cust_data: 0,
+        lpfn_hook: std::ptr::null_mut(),
+        lp_template_name: std::ptr::null(),
+        h_instance: std::ptr::null_mut(),
+        lpsz_style: std::ptr::null(),
+        n_font_type: 0,
+        ___missing_alignment: 0,
+        n_size_min: 0,
+        n_size_max: 0,
+    };
+
+    let result = unsafe { ChooseFontW(&mut cf) };
+    if result != 0 {
+        // User picked a font — extract name and size
+        let chosen_name = String::from_utf16_lossy(
+            &lf.lf_face_name[..lf.lf_face_name.iter().position(|&c| c == 0).unwrap_or(32)],
+        );
+        let chosen_size = cf.i_point_size / 10; // i_point_size is in tenths of a point
+
+        cfg.general.font_name = chosen_name;
+        cfg.general.font_size = if chosen_size > 0 {
+            chosen_size
+        } else {
+            -lf.lf_height
+        };
+
+        // Save and apply
+        let _ = cfg.save_to_file();
+        drop(cfg);
+        gui::update_font(&CONFIG.get().unwrap().lock().unwrap().general);
+    }
+}
+
+fn dialog_choose_color() {
+    let cfg = CONFIG.get().unwrap().lock().unwrap();
+    let rgb: u32 = (cfg.general.text_r as u32)
+        | ((cfg.general.text_g as u32) << 8)
+        | ((cfg.general.text_b as u32) << 16);
+    drop(cfg);
+
+    let mut cust_colors: [u32; 16] = [0; 16];
+    let mut cc = CHOOSECOLORW {
+        l_struct_size: std::mem::size_of::<CHOOSECOLORW>() as u32,
+        hwnd_owner: std::ptr::null_mut(),
+        h_instance: std::ptr::null_mut(),
+        rgb_result: rgb,
+        lp_cust_colors: cust_colors.as_mut_ptr(),
+        flags: CC_RGBINIT | CC_FULLOPEN,
+        l_cust_data: 0,
+        lpfn_hook: std::ptr::null_mut(),
+        lp_template_name: std::ptr::null(),
+    };
+
+    let result = unsafe { ChooseColorW(&mut cc) };
+    if result != 0 {
+        let r = (cc.rgb_result & 0xFF) as u8;
+        let g = ((cc.rgb_result >> 8) & 0xFF) as u8;
+        let b = ((cc.rgb_result >> 16) & 0xFF) as u8;
+
+        let mut cfg = CONFIG.get().unwrap().lock().unwrap();
+        cfg.general.text_r = r;
+        cfg.general.text_g = g;
+        cfg.general.text_b = b;
+        let _ = cfg.save_to_file();
+        drop(cfg);
+        gui::update_config(&CONFIG.get().unwrap().lock().unwrap().general);
+    }
+}
+
+/// Create a 16×16 solid-color tray icon from R, G, B values (0-255).
+fn make_tray_icon_rgba(r: u8, g: u8, b: u8) -> tray_icon::Icon {
+    let mut rgba = Vec::with_capacity(16 * 16 * 4);
+    for _ in 0..16 * 16 {
+        rgba.extend_from_slice(&[r, g, b, 255]);
+    }
+    tray_icon::Icon::from_rgba(rgba, 16, 16).expect("icon")
+}
+
+// ───────────────────────────────────────────────
+//  Main
+// ───────────────────────────────────────────────
+
 fn main() {
     try_attach_console();
     set_dpi_aware();
 
-    let instance = SingleInstance::new("A77674028D8A4C85BD5A61AD4E30E56C")
-        .unwrap_or_else(|e| fatal(&e.to_string()));
+    // Single instance
+    let instance = SingleInstance::new(PROCESS_GUID).unwrap_or_else(|e| fatal(&e.to_string()));
     if !instance.is_single() {
         std::process::exit(1);
     }
 
-    let config = Config::load_or_create().unwrap_or_else(|e| fatal(&e.to_string()));
-    CONFIG.set(config).ok();
+    // i18n
+    i18n::init();
 
-    let audio = AudioPlayer::new();
+    // Config
+    let config = Config::load_or_create().unwrap_or_else(|e| fatal(&e));
+    if DEBUG_MODE{
+        dbg!(&config);
+    }
+
+    // Apply auto-start setting
+    update_auto_start(config.general.auto_start);
+
+    let app_name = i18n::tr(i18n::TrKey::AppName);
+
+    // Audio
+    let audio = AudioPlayer::new(config.general.volume);
+
+    // Create GUI clock window (hidden)
+    gui::create_clock_window(&config.general).unwrap_or_else(|e| fatal(&e));
+    let gui_hwnd = gui::get_hwnd();
+
+    // Hotkey
+    hotkey::HotKey::init(&config.general.hotkey_mod, &config.general.hotkey_key);
+    hotkey::HotKey::register(gui_hwnd);
+
+    CONFIG.set(std::sync::Mutex::new(config)).ok();
     AUDIO.set(audio).ok();
-
     SKIP_COUNT.set(AtomicU32::new(0)).ok();
     PAUSED.set(AtomicBool::new(false)).ok();
     NEED_REFRESH.set(AtomicBool::new(false)).ok();
 
-    let cfg = CONFIG.get().unwrap();
-    let audio = AUDIO.get().unwrap();
+    // ── Build tray menu ────────────────────────
 
-    let next_item = MenuItem::new(next_label(), false, None);
-    let skip_item = MenuItem::with_id("skip_next", "Skip next", true, None);
-    let pause_item = MenuItem::with_id("toggle_pause", "Pause", true, None);
-    let exit_item = MenuItem::with_id("exit", "Exit", true, None);
+    let next_item = MenuItem::new(
+        next_label(&CONFIG.get().unwrap().lock().unwrap()),
+        false,
+        None,
+    );
+    let show_item = MenuItem::with_id("show_clock", i18n::tr(i18n::TrKey::ShowClock), true, None);
+    let skip_item = MenuItem::with_id("skip_next", i18n::tr(i18n::TrKey::SkipNext), true, None);
+    let pause_item = MenuItem::with_id("toggle_pause", i18n::tr(i18n::TrKey::Pause), true, None);
+    let edit_item = MenuItem::with_id("edit_config", i18n::tr(i18n::TrKey::EditConfig), true, None);
+    let font_item = MenuItem::with_id(
+        "font_settings",
+        i18n::tr(i18n::TrKey::FontSettings),
+        true,
+        None,
+    );
+    let color_item = MenuItem::with_id("text_color", i18n::tr(i18n::TrKey::TextColor), true, None);
+    let exit_item = MenuItem::with_id("exit", i18n::tr(i18n::TrKey::Exit), true, None);
     let sep = PredefinedMenuItem::separator();
+    let sep2 = PredefinedMenuItem::separator();
+    let sep3 = PredefinedMenuItem::separator();
+    let sep4 = PredefinedMenuItem::separator();
 
     MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| match event.id.as_ref() {
-        "exit" => std::process::exit(0),
+        "exit" => {
+            let hwnd = gui::get_hwnd();
+            hotkey::HotKey::unregister(hwnd);
+            std::process::exit(0);
+        }
         "skip_next" => {
             SKIP_COUNT.get().unwrap().fetch_add(1, Ordering::Relaxed);
             NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
@@ -221,70 +579,128 @@ fn main() {
             PAUSED.get().unwrap().fetch_not(Ordering::Relaxed);
             NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
         }
+        "show_clock" => {
+            if gui::is_visible() {
+                gui::hide_clock();
+            } else {
+                gui::show_clock();
+            }
+            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+        }
+        "edit_config" => {
+            let cfg = CONFIG.get().unwrap().lock().unwrap();
+            let path = cfg.config_path.clone();
+            drop(cfg);
+            let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
+        }
+        "font_settings" => {
+            dialog_choose_font();
+            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+        }
+        "text_color" => {
+            dialog_choose_color();
+            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+        }
         _ => {}
+    })));
+
+    // Handle left click on tray icon: toggle clock window
+    TrayIconEvent::set_event_handler(Some(Box::new(|event: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            ..
+        } = event
+        {
+            if gui::is_visible() {
+                gui::hide_clock();
+            } else {
+                gui::show_clock();
+            }
+            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+        }
     })));
 
     let menu = Menu::new();
     menu.append(&next_item).ok();
     menu.append(&sep).ok();
+    menu.append(&show_item).ok();
     menu.append(&skip_item).ok();
     menu.append(&pause_item).ok();
-    menu.append(&sep).ok();
+    menu.append(&sep2).ok();
+    menu.append(&edit_item).ok();
+    menu.append(&sep3).ok();
+    menu.append(&font_item).ok();
+    menu.append(&color_item).ok();
+    menu.append(&sep4).ok();
     menu.append(&exit_item).ok();
 
-    let icon = {
-        let mut rgba = Vec::with_capacity(16 * 16 * 4);
-        for _ in 0..16 * 16 {
-            rgba.extend_from_slice(&[66u8, 209, 160, 255]);
-        }
-        tray_icon::Icon::from_rgba(rgba, 16, 16).expect("icon")
-    };
+    // Create tray icon — solid color 16×16
+    let icon = make_tray_icon_rgba(61, 176, 87);
 
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
-        .with_tooltip("Tip Clock")
+        .with_tooltip(app_name)
         .with_menu(Box::new(menu))
         .with_menu_on_right_click(true)
         .build()
         .unwrap_or_else(|e| fatal(&format!("Tray icon: {e}")));
 
-    let mut last_played: Option<(u32, u32)> = None;
-    let mut last_refresh = std::time::Instant::now();
+    // ── Main loop ──────────────────────────────
+
+    let mut last_played_second: Option<(u32, u32, u32)> = None;
+    let mut last_menu_refresh = std::time::Instant::now();
+    let mut last_config_check = std::time::Instant::now();
+
+    // Initial menu refresh
+    refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
 
     loop {
         pump_messages();
 
-        // Immediate menu refresh when state changes (skip / pause toggled).
+        // Handle hotkey (WM_HOTKEY is dispatched to the GUI window, but we
+        // also check here for robustness)
+        let now = Local::now();
+        let current = (now.hour(), now.minute(), now.second());
+
+        // Menu state refresh (immediate if needed, otherwise periodic)
         if NEED_REFRESH.get().unwrap().swap(false, Ordering::Relaxed) {
-            if PAUSED.get().unwrap().load(Ordering::Relaxed) {
-                refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
-            } else if SKIP_COUNT.get().unwrap().load(Ordering::Relaxed) > 0 {
-                let label = next_after_skip_label();
-                tray.set_tooltip(Some(&label)).ok();
-                next_item.set_text(&label);
-                skip_item.set_enabled(true);
-                pause_item.set_text("Pause");
-            } else {
-                refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
-            }
-            last_refresh = std::time::Instant::now();
+            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
+            last_menu_refresh = std::time::Instant::now();
         }
 
-        let now = Local::now();
-        let current = (now.hour(), now.minute());
+        // Check config hot-reload (every 5 seconds)
+        if last_config_check.elapsed() >= Duration::from_secs(5) {
+            last_config_check = std::time::Instant::now();
+            let mut cfg = CONFIG.get().unwrap().lock().unwrap();
+            if cfg.try_reload() {
+                // Update audio volume
+                AUDIO.get().unwrap().set_volume(cfg.general.volume);
+                // Update hotkey
+                hotkey::HotKey::update(gui_hwnd, &cfg.general.hotkey_mod, &cfg.general.hotkey_key);
+                // Update GUI config
+                gui::update_config(&cfg.general);
+                // Update auto-start
+                update_auto_start(cfg.general.auto_start);
+                // Refresh menu
+                drop(cfg);
+                refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
+                last_menu_refresh = std::time::Instant::now();
+            }
+        }
 
-        if last_played != Some(current) {
-            last_played = Some(current);
+        // Schedule check: every second
+        if last_played_second != Some(current) {
+            last_played_second = Some(current);
 
             let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
+            let cfg = CONFIG.get().unwrap().lock().unwrap();
+
+            // Determine if we should skip the next match
             let do_skip = if paused {
                 true
             } else {
-                let has_match = cfg
-                    .schedule
-                    .iter()
-                    .any(|e| config::parse_hhmm(&e.time) == Some(current));
-                if has_match {
+                let matches = cfg.entries_at(current.0, current.1, current.2);
+                if !matches.is_empty() {
                     let count = SKIP_COUNT.get().unwrap();
                     let prev = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                         if v > 0 { Some(v - 1) } else { None }
@@ -296,26 +712,34 @@ fn main() {
             };
 
             if !do_skip {
-                for entry in &cfg.schedule {
-                    match config::parse_hhmm(&entry.time) {
-                        Some(t) if t == current => audio.play(entry.ring),
-                        Some(t) if t > current => break,
-                        _ => {}
+                let entries = cfg.entries_at(current.0, current.1, current.2);
+                for entry in entries {
+                    if entry.ring != RingType::None {
+                        AUDIO.get().unwrap().play(
+                            entry.ring,
+                            entry.custom_file.as_deref(),
+                            &cfg.exe_dir,
+                        );
+                        // Show the clock window when a reminder triggers
+                        gui::show_clock();
                     }
                 }
             }
 
-            // Minute changed — refresh menu in case skip was consumed.
-            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
+            // Refresh menu after minute change
+            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
+            last_menu_refresh = std::time::Instant::now();
         }
 
-        if last_refresh.elapsed() >= Duration::from_secs(INTERVAL_SECS as u64) {
-            last_refresh = std::time::Instant::now();
-            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item);
+        // Periodic menu refresh (every INTERVAL_SECS)
+        if last_menu_refresh.elapsed() >= Duration::from_secs(INTERVAL_SECS as u64) {
+            last_menu_refresh = std::time::Instant::now();
+            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
         }
 
+        // Wait for next message or timeout
         unsafe {
-            MsgWaitForMultipleObjects(0, std::ptr::null(), 0, INTERVAL_SECS * 1000, QS_ALLINPUT);
+            MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 500, QS_ALLINPUT);
         }
     }
 }
