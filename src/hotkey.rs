@@ -222,6 +222,7 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
 }
 
 /// Re-register with new modifiers/key (after config reload).
+#[allow(dead_code)]
 pub fn update(mod_str: &str, key_str: &str) {
     let hwnd = HOTKEY_HWND.load(Ordering::Relaxed) as HWND;
     if hwnd.is_null() {

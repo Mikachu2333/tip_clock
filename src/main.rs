@@ -659,7 +659,6 @@ fn main() {
 
     let mut last_played_second: Option<(u32, u32, u32)> = None;
     let mut last_menu_refresh = std::time::Instant::now();
-    let mut last_config_check = std::time::Instant::now();
 
     // Initial menu refresh
     refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
@@ -676,26 +675,6 @@ fn main() {
         if NEED_REFRESH.get().unwrap().swap(false, Ordering::Relaxed) {
             refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
             last_menu_refresh = std::time::Instant::now();
-        }
-
-        // Check config hot-reload (every 5 seconds)
-        if last_config_check.elapsed() >= Duration::from_secs(5) {
-            last_config_check = std::time::Instant::now();
-            let mut cfg = CONFIG.get().unwrap().lock().unwrap();
-            if cfg.try_reload() {
-                // Update audio volume
-                AUDIO.get().unwrap().set_volume(cfg.general.volume);
-                // Update hotkey
-                hotkey::update(&cfg.general.hotkey_mod, &cfg.general.hotkey_key);
-                // Update GUI config
-                gui::update_config(&cfg.general);
-                // Update auto-start
-                update_auto_start(cfg.general.auto_start);
-                // Refresh menu
-                drop(cfg);
-                refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
-                last_menu_refresh = std::time::Instant::now();
-            }
         }
 
         // Schedule check: every second

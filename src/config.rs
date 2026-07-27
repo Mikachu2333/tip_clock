@@ -120,11 +120,11 @@ pub struct ParsedEntry {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: GeneralConfig,
+    #[allow(dead_code)]
     pub schedule: Vec<ScheduleEntry>,
     pub entries: Vec<ParsedEntry>,
     pub config_path: PathBuf,
     pub exe_dir: PathBuf,
-    last_modified: Option<std::time::SystemTime>,
 }
 
 /// Template for auto-creating config with comments — Chinese
@@ -282,9 +282,6 @@ impl Config {
 
         if config_path.exists() {
             let (cfg, _source) = Self::load_and_merge(&config_path)?;
-            let last_modified = std::fs::metadata(&config_path)
-                .ok()
-                .and_then(|m| m.modified().ok());
             let entries = Config::build_entries(&cfg.schedule, cfg.general.volume);
             Ok(Config {
                 general: cfg.general,
@@ -292,7 +289,6 @@ impl Config {
                 entries,
                 config_path: config_path.clone(),
                 exe_dir,
-                last_modified,
             })
         } else {
             // Create default config from template
@@ -316,16 +312,12 @@ impl Config {
 
             let schedule = default_schedule();
             let entries = Config::build_entries(&schedule, default.volume);
-            let last_modified = std::fs::metadata(&config_path)
-                .ok()
-                .and_then(|m| m.modified().ok());
             Ok(Config {
                 general: default,
                 schedule,
                 entries,
                 config_path,
                 exe_dir,
-                last_modified,
             })
         }
     }
@@ -385,37 +377,6 @@ impl Config {
         };
 
         Ok((merged, raw))
-    }
-
-    /// Try to hot-reload the config if the file changed
-    pub fn try_reload(&mut self) -> bool {
-        let modified = match std::fs::metadata(&self.config_path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-        {
-            Some(t) => t,
-            None => return false,
-        };
-
-        if self.last_modified == Some(modified) {
-            return false;
-        }
-
-        self.last_modified = Some(modified);
-
-        match Self::load_and_merge(&self.config_path) {
-            Ok((cfg, _)) => {
-                self.general = cfg.general;
-                self.schedule = cfg.schedule;
-                self.entries = Config::build_entries(&self.schedule, self.general.volume);
-                crate::audio::debug_log("[tip_clock] 配置文件已重新加载\n");
-                true
-            }
-            Err(_e) => {
-                // Keep old config on error
-                false
-            }
-        }
     }
 
     pub fn next_reminder(&self, current_h: u32, current_m: u32) -> Option<(u32, u32, RingType)> {

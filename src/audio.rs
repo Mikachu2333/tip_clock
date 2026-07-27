@@ -56,6 +56,7 @@ impl AudioPlayer {
     }
 
     /// Set volume (0-100). Affects subsequent plays.
+    #[allow(dead_code)]
     pub fn set_volume(&self, volume: u8) {
         let vol = volume.min(100);
         *self.current_volume.lock().unwrap() = vol;
