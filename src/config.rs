@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn ReplaceFileW(
+        replaced: *const u16,
+        replacement: *const u16,
+        backup: *const u16,
+        flags: u32,
+        exclude: *mut std::ffi::c_void,
+        reserved: *mut std::ffi::c_void,
+    ) -> i32;
+}
 
 // ───────────────────────────────────────────────
 //  Ring type — now includes Custom and None
@@ -35,7 +48,7 @@ impl RingType {
 pub struct ScheduleEntry {
     pub time: String,
     pub ring: RingType,
-    /// For RingType::Custom, the WAV file name (relative to EXE dir), without extension
+    /// For RingType::Custom, a WAV file name in the EXE directory.
     #[serde(default)]
     pub custom_file: Option<String>,
 }
@@ -45,6 +58,7 @@ pub struct ScheduleEntry {
 // ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GeneralConfig {
     pub auto_start: bool,
     pub bg_r: u8,
@@ -91,7 +105,9 @@ impl GeneralConfig {
         self.bg_opacity = self.bg_opacity.min(100);
         self.display_time = self.display_time.clamp(1, 60);
         self.volume = self.volume.min(100);
-        // Validate window position — reset to 0,0 if out of screen bounds
+        // Validate only integer corruption here. Actual monitor/work-area
+        // clamping is performed by gui.rs, where negative multi-monitor
+        // coordinates are valid.
         self.clamp_window_position();
     }
 
@@ -101,13 +117,12 @@ impl GeneralConfig {
         if self.window_x == -1 && self.window_y == -1 {
             return;
         }
-        // Sanity-check: negative values (other than -1) or absurdly large values
-        // indicate a corrupted config — reset to 0,0.
-        // Screen-bound validation happens at window creation time in gui.rs.
-        if self.window_x < -1
-            || self.window_x > 16384
-            || self.window_y < -1
-            || self.window_y > 16384
+        // Keep ordinary negative coordinates for monitors left/above the
+        // primary display; reject only implausible/corrupt values.
+        if self.window_x < -1_000_000
+            || self.window_x > 1_000_000
+            || self.window_y < -1_000_000
+            || self.window_y > 1_000_000
         {
             self.window_x = 0;
             self.window_y = 0;
@@ -286,6 +301,92 @@ fn config_template() -> &'static str {
     }
 }
 
+fn choose_config_path(exe_path: &Path) -> Result<PathBuf, String> {
+    // Prefer portable configuration whenever the EXE directory is writable,
+    // including when config.toml already exists but is read-only.
+    let probe = exe_path.with_extension(format!("write-test-{}.tmp", std::process::id()));
+    let writable = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|_| std::fs::remove_file(&probe))
+        .is_ok();
+    if writable {
+        return Ok(exe_path.to_path_buf());
+    }
+
+    let local = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or("EXE directory is not writable and LOCALAPPDATA is unavailable")?
+        .join("TipClock");
+    std::fs::create_dir_all(&local).map_err(|e| {
+        format!(
+            "Failed to create config directory '{}': {e}",
+            local.display()
+        )
+    })?;
+    let fallback = local.join("config.toml");
+    // Preserve an existing portable configuration on the first fallback.
+    if exe_path.exists() && !fallback.exists() {
+        let data = std::fs::read(exe_path)
+            .map_err(|e| format!("Failed to migrate existing config: {e}"))?;
+        atomic_write(&fallback, &data)?;
+    }
+    Ok(fallback)
+}
+
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_owned()).to_string()
+}
+
+fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("Config path has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create config directory: {e}"))?;
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        if path.exists() {
+            let destination = crate::audio::to_wide(&path.to_string_lossy());
+            let replacement = crate::audio::to_wide(&temp.to_string_lossy());
+            // SAFETY: both UTF-16 paths are NUL-terminated and remain alive
+            // during the synchronous call. No backup/exclusion buffers are used.
+            if unsafe {
+                ReplaceFileW(
+                    destination.as_ptr(),
+                    replacement.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        } else {
+            std::fs::rename(&temp, path)
+        }
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result.map_err(|e| {
+        format!(
+            "Failed to atomically write config '{}': {e}",
+            path.display()
+        )
+    })
+}
+
 pub fn default_schedule() -> Vec<ScheduleEntry> {
     vec![
         ScheduleEntry {
@@ -314,7 +415,8 @@ impl Config {
             .parent()
             .ok_or("Failed to get EXE directory")?
             .to_path_buf();
-        let config_path = exe_dir.join("config.toml");
+        let exe_config_path = exe_dir.join("config.toml");
+        let config_path = choose_config_path(&exe_config_path)?;
 
         if config_path.exists() {
             let mut cfg = Self::load_and_merge(&config_path)?;
@@ -345,8 +447,7 @@ impl Config {
                 .replace("{hotkey_key}", &default.hotkey_key)
                 .replace("{window_x}", &default.window_x.to_string())
                 .replace("{window_y}", &default.window_y.to_string());
-            std::fs::write(&config_path, content)
-                .map_err(|e| format!("Failed to create config file: {e}"))?;
+            atomic_write(&config_path, content.as_bytes())?;
 
             let schedule = default_schedule();
             let entries = Config::build_entries(&schedule);
@@ -410,18 +511,13 @@ impl Config {
             ));
         }
 
-        // If the user-provided schedule is entirely invalid, fall back to
-        // defaults rather than running with an empty list silently.
-        let final_schedule = if valid_schedule.is_empty() {
-            if !cfg.schedule.is_empty() {
-                crate::audio::debug_log(
-                    "[tip_clock] all schedule entries invalid, using defaults\n",
-                );
-            }
-            default_schedule()
-        } else {
-            valid_schedule
-        };
+        // An explicitly empty schedule is valid. If entries were supplied but
+        // every one is invalid, fail visibly instead of silently scheduling
+        // unrelated default reminders.
+        if valid_schedule.is_empty() && !cfg.schedule.is_empty() {
+            return Err("All configured schedule entries are invalid".into());
+        }
+        let final_schedule = valid_schedule;
 
         let merged = ConfigFile {
             general: cfg.general,
@@ -431,16 +527,19 @@ impl Config {
         Ok(merged)
     }
 
-    pub fn next_reminder(&self, current_h: u32, current_m: u32) -> Option<(u32, u32, RingType)> {
-        let current_total = current_h * 60 + current_m;
-        if let Some(e) = self
-            .entries
-            .iter()
-            .find(|e| e.total_sec / 60 > current_total)
-        {
-            return Some((e.hour, e.minute, e.ring));
+    pub fn next_reminder(
+        &self,
+        current_h: u32,
+        current_m: u32,
+        current_s: u32,
+    ) -> Option<(u32, u32, u32, RingType, bool)> {
+        let current_total = current_h * 3600 + current_m * 60 + current_s;
+        if let Some(e) = self.entries.iter().find(|e| e.total_sec > current_total) {
+            return Some((e.hour, e.minute, e.total_sec % 60, e.ring, false));
         }
-        self.entries.first().map(|e| (e.hour, e.minute, e.ring))
+        self.entries
+            .first()
+            .map(|e| (e.hour, e.minute, e.total_sec % 60, e.ring, true))
     }
 
     fn build_entries(schedule: &[ScheduleEntry]) -> Vec<ParsedEntry> {
@@ -464,12 +563,12 @@ impl Config {
         entries
     }
 
-    /// Find all schedule entries that match the given time (HH:MM:SS)
-    pub fn entries_at(&self, h: u32, m: u32, s: u32) -> Vec<&ParsedEntry> {
-        let total = h * 3600 + m * 60 + s;
+    /// Find entries in `(start, end]`. This prevents a short message-loop
+    /// stall from losing a reminder whose exact second was not sampled.
+    pub fn entries_between(&self, start: u32, end: u32) -> Vec<&ParsedEntry> {
         self.entries
             .iter()
-            .filter(|e| e.total_sec == total)
+            .filter(|entry| entry.total_sec > start && entry.total_sec <= end)
             .collect()
     }
 }
@@ -638,17 +737,18 @@ impl Config {
         out.push_str("\n\n");
         for entry in &self.schedule {
             out.push_str("[[schedule]]\n");
-            out.push_str(&format!("time = \"{}\"\n", entry.time));
-            out.push_str(&format!("ring = \"{}\"\n", entry.ring.display_name()));
+            out.push_str(&format!("time = {}\n", toml_string(&entry.time)));
+            out.push_str(&format!(
+                "ring = {}\n",
+                toml_string(entry.ring.display_name())
+            ));
             if let Some(ref cf) = entry.custom_file {
-                out.push_str(&format!("custom_file = \"{}\"\n", cf));
+                out.push_str(&format!("custom_file = {}\n", toml_string(cf)));
             }
             out.push('\n');
         }
 
-        std::fs::write(&self.config_path, out)
-            .map_err(|e| format!("Failed to write config: {e}"))?;
-        Ok(())
+        atomic_write(&self.config_path, out.as_bytes())
     }
 }
 
@@ -750,7 +850,7 @@ mod tests {
         // Simulate entries_at logic
         let at_9 = parsed
             .iter()
-            .filter(|e| e.total_sec == 9 * 3600)
+            .filter(|e| e.total_sec > 9 * 3600 - 1 && e.total_sec <= 9 * 3600)
             .collect::<Vec<_>>();
         assert_eq!(at_9.len(), 1);
         assert_eq!(at_9[0].ring, RingType::Start);

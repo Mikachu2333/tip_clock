@@ -31,7 +31,9 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 2. The clock display refreshes every 0.5 seconds to minimize system load.
 3. Time format is `HH:MM:SS` (24-hour), e.g. `08:00:00`. Single digits must be zero-padded.
 4. Changes to `config.toml` require a program restart to take effect.
-5. Custom WAV files should be placed in the same folder as the EXE. Only the filename (without `.wav`) is needed in the config.
+5. Custom WAV files must be in the EXE folder. The `.wav` suffix is optional; absolute paths and subdirectories are rejected.
+6. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically.
+7. `volume` controls only Tip Clock's audio stream and never changes the Windows system volume.
 
 ---
 
@@ -142,7 +144,7 @@ custom_file = "lunch"
 | Edit Config             | Open config.toml in Notepad          |
 | Text Color...           | Change clock text color              |
 | Background Color...     | Change clock background color        |
-| Opacity                 | Adjust background opacity via slider |
+| Opacity                 | Adjust background opacity in a numeric field |
 | Exit                    | Quit the program                     |
 
 **Left-click** the tray icon = toggle clock

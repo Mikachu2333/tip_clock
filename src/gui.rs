@@ -130,6 +130,7 @@ unsafe extern "system" {
 
 type HINSTANCE = *mut std::ffi::c_void;
 type HWND = *mut std::ffi::c_void;
+type HMONITOR = *mut std::ffi::c_void;
 type HDC = *mut std::ffi::c_void;
 type HGDIOBJ = *mut std::ffi::c_void;
 type HBRUSH = *mut std::ffi::c_void;
@@ -150,8 +151,7 @@ const AC_SRC_ALPHA: u8 = 0x01;
 
 const BI_RGB: u32 = 0;
 
-const SM_CXSCREEN: i32 = 0;
-const SM_CYSCREEN: i32 = 1;
+const MONITOR_DEFAULTTONEAREST: u32 = 2;
 
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_SHOWWINDOW: u32 = 0x0040;
@@ -169,6 +169,7 @@ const WM_ERASEBKGND: u32 = 0x0014;
 const WM_CTLCOLOREDIT: u32 = 0x0133;
 const WM_SETCURSOR: u32 = 0x0020;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
+const WM_DPICHANGED: u32 = 0x02E0;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;
 const HTCAPTION: isize = 2;
 
@@ -189,11 +190,25 @@ struct POINT {
 }
 
 #[repr(C)]
+struct SIZE {
+    cx: i32,
+    cy: i32,
+}
+
+#[repr(C)]
 struct RECT {
     left: i32,
     top: i32,
     right: i32,
     bottom: i32,
+}
+
+#[repr(C)]
+struct MONITORINFO {
+    cb_size: u32,
+    monitor: RECT,
+    work: RECT,
+    flags: u32,
 }
 
 #[repr(C)]
@@ -272,23 +287,11 @@ unsafe extern "system" {
     fn DestroyWindow(hWnd: HWND) -> i32;
     fn GetDC(hWnd: HWND) -> HDC;
     fn ReleaseDC(hWnd: HWND, hDC: HDC) -> i32;
-    fn CreateCompatibleDC(hDC: HDC) -> HDC;
-    fn DeleteDC(hDC: HDC) -> i32;
-    fn CreateDIBSection(
-        hdc: HDC,
-        pbmi: *const BITMAPINFOHEADER,
-        usage: u32,
-        ppvBits: *mut *mut std::ffi::c_void,
-        hSection: HINSTANCE,
-        offset: u32,
-    ) -> HBITMAP;
-    fn SelectObject(hDC: HDC, h: HGDIOBJ) -> HGDIOBJ;
-    fn DeleteObject(ho: HGDIOBJ) -> i32;
     fn UpdateLayeredWindow(
         hWnd: HWND,
         hdcDst: HDC,
         pptDst: *const POINT,
-        psize: *const i32,
+        psize: *const SIZE,
         hdcSrc: HDC,
         pptSrc: *const POINT,
         crKey: u32,
@@ -304,8 +307,8 @@ unsafe extern "system" {
         cy: i32,
         uFlags: u32,
     ) -> i32;
-    fn GetSystemMetrics(nIndex: i32) -> i32;
-    fn GetDeviceCaps(hdc: HDC, index: i32) -> i32;
+    fn MonitorFromPoint(pt: POINT, flags: u32) -> HMONITOR;
+    fn GetMonitorInfoW(monitor: HMONITOR, info: *mut MONITORINFO) -> i32;
     fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: *const u16) -> HINSTANCE;
     fn SetCursor(hCursor: HINSTANCE) -> HINSTANCE;
     fn SetTimer(
@@ -333,19 +336,47 @@ unsafe extern "system" {
     fn BeginPaint(hWnd: HWND, lpPaint: *mut PAINTSTRUCT) -> HDC;
     fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> i32;
     fn GetClientRect(hWnd: HWND, lpRect: *mut RECT) -> i32;
-    fn GetStockObject(fnObject: i32) -> HGDIOBJ;
-    fn SetBkMode(hdc: HDC, mode: i32) -> i32;
 }
 
-// ───────────────────────────────────────────────
-//  Raw pointer wrapper (Send + Sync, main thread only)
-// ───────────────────────────────────────────────
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn CreateCompatibleDC(hDC: HDC) -> HDC;
+    fn DeleteDC(hDC: HDC) -> i32;
+    fn CreateDIBSection(
+        hdc: HDC,
+        pbmi: *const BITMAPINFOHEADER,
+        usage: u32,
+        ppvBits: *mut *mut std::ffi::c_void,
+        hSection: HINSTANCE,
+        offset: u32,
+    ) -> HBITMAP;
+    fn SelectObject(hDC: HDC, h: HGDIOBJ) -> HGDIOBJ;
+    fn DeleteObject(ho: HGDIOBJ) -> i32;
+    fn GetDeviceCaps(hdc: HDC, index: i32) -> i32;
+    fn GetStockObject(fnObject: i32) -> HGDIOBJ;
+    fn SetBkMode(hdc: HDC, mode: i32) -> i32;
+    fn CreateFontW(
+        nHeight: i32,
+        nWidth: i32,
+        nEscapement: i32,
+        nOrientation: i32,
+        fnWeight: i32,
+        fdwItalic: u32,
+        fdwUnderline: u32,
+        fdwStrikeOut: u32,
+        fdwCharSet: u32,
+        fdwOutputPrecision: u32,
+        fdwClipPrecision: u32,
+        fdwQuality: u32,
+        fdwPitchAndFamily: u32,
+        lpszFace: *const u16,
+    ) -> HFONT;
+}
 
+// Handles are stored as integer-sized opaque values. They are never
+// dereferenced by Rust and all operations are dispatched on the GUI thread.
 #[derive(Debug, Clone, Copy)]
 struct RawPtr(isize);
-
-unsafe impl Send for RawPtr {}
-unsafe impl Sync for RawPtr {}
 
 impl RawPtr {
     fn from_ptr<T>(p: *mut T) -> Self {
@@ -362,12 +393,8 @@ impl RawPtr {
     }
 }
 
-/// GDI+ object wrapper — all GDI+ objects are thread-safe when used on the
-/// main thread exclusively (which we guarantee).
 #[derive(Debug, Clone, Copy)]
 struct GpObj(isize);
-unsafe impl Send for GpObj {}
-unsafe impl Sync for GpObj {}
 
 impl GpObj {
     fn gp_font_family(&self) -> GpFontFamily {
@@ -400,11 +427,45 @@ fn ease_out_cubic(t: f32) -> f32 {
 }
 
 fn get_system_dpi() -> f32 {
+    // SAFETY: a screen DC is acquired and released in the same scope.
     unsafe {
         let screen_dc = GetDC(std::ptr::null_mut());
-        let dpi = GetDeviceCaps(screen_dc, LOGPIXELSY) as f32;
+        if screen_dc.is_null() {
+            return 96.0;
+        }
+        let dpi = GetDeviceCaps(screen_dc, LOGPIXELSY);
         ReleaseDC(std::ptr::null_mut(), screen_dc);
-        dpi
+        if dpi > 0 { dpi as f32 } else { 96.0 }
+    }
+}
+
+fn monitor_work_area(point: POINT) -> Result<RECT, String> {
+    // SAFETY: info has the required cb_size and is valid for the call.
+    unsafe {
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return Err("MonitorFromPoint failed".into());
+        }
+        let mut info = MONITORINFO {
+            cb_size: std::mem::size_of::<MONITORINFO>() as u32,
+            monitor: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            work: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            flags: 0,
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return Err("GetMonitorInfoW failed".into());
+        }
+        Ok(info.work)
     }
 }
 
@@ -481,6 +542,7 @@ struct GuiState {
     // GDI objects
     mem_dc: RawPtr,
     bitmap: RawPtr,
+    old_bitmap: RawPtr,
     bitmap_bits: RawPtr,
     // GDI+ objects
     gp_font_family: GpObj,
@@ -592,19 +654,47 @@ unsafe extern "system" fn clock_wndproc(
             return 1;
         }
 
-        WM_EXITSIZEMOVE => {
-            // Window finished moving — notify callback with new position
-            if let Some(cb) = POSITION_CALLBACK.get()
-                && let Some(state_lock) = GUI_STATE.get()
-            {
-                let state_opt = state_lock.lock().unwrap();
-                if let Some(ref state) = *state_opt {
-                    let mut rect = unsafe { std::mem::zeroed::<RECT>() };
-                    unsafe {
-                        GetWindowRect(state.hwnd.as_hwnd(), &mut rect);
-                    }
-                    cb(rect.left, rect.top);
+        WM_DPICHANGED => {
+            // Windows supplies a work-area-adjusted rectangle for the new DPI.
+            let suggested = lparam as *const RECT;
+            if !suggested.is_null() {
+                // SAFETY: WM_DPICHANGED guarantees lparam points to a RECT for
+                // the duration of this synchronous window-procedure call.
+                let rect = unsafe { &*suggested };
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOACTIVATE,
+                    );
                 }
+            }
+            return 0;
+        }
+
+        WM_EXITSIZEMOVE => {
+            // Never invoke application callbacks while holding GUI_STATE: the
+            // callback persists config and therefore takes a different lock.
+            let position = GUI_STATE.get().and_then(|state_lock| {
+                let state_opt = state_lock.lock().unwrap_or_else(|e| e.into_inner());
+                state_opt.as_ref().and_then(|state| {
+                    let mut rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    };
+                    // SAFETY: state owns a live HWND while it is present.
+                    (unsafe { GetWindowRect(state.hwnd.as_hwnd(), &mut rect) } != 0)
+                        .then_some((rect.left, rect.top))
+                })
+            });
+            if let (Some(cb), Some((x, y))) = (POSITION_CALLBACK.get(), position) {
+                cb(x, y);
             }
             return 0;
         }
@@ -778,13 +868,13 @@ unsafe fn redraw_layered_window_with_alpha(state: &mut GuiState, constant_alpha:
             alpha_format: AC_SRC_ALPHA,
         };
         let pt_src = POINT { x: 0, y: 0 };
-        let size = [w, h];
+        let size = SIZE { cx: w, cy: h };
         let screen_dc = GetDC(std::ptr::null_mut());
         UpdateLayeredWindow(
             state.hwnd.as_hwnd(),
             screen_dc,
             std::ptr::null(),
-            size.as_ptr(),
+            &size,
             hdc,
             &pt_src,
             0,
@@ -950,8 +1040,9 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         return Err("RegisterClassExW failed".into());
     }
 
-    let system_dpi = get_system_dpi();
-    let scaled_font_size = FONT_SIZE_PT * (system_dpi / 96.0);
+    // UNIT_POINT already converts points using the target HDC's DPI. Scaling
+    // the point size again would make text grow quadratically at high DPI.
+    let scaled_font_size = FONT_SIZE_PT;
 
     let screen_dc = unsafe { GetDC(std::ptr::null_mut()) };
     let mut tmp_graphics: GpGraphics = std::ptr::null_mut();
@@ -1080,7 +1171,35 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             0,
         )
     };
-    unsafe { SelectObject(tmp_dc, tmp_bmp as HGDIOBJ) };
+    if tmp_dc.is_null() || tmp_bmp.is_null() || tmp_bits.is_null() {
+        unsafe {
+            if !tmp_bmp.is_null() {
+                DeleteObject(tmp_bmp as HGDIOBJ);
+            }
+            if !tmp_dc.is_null() {
+                DeleteDC(tmp_dc);
+            }
+            GdipDeleteStringFormat(gp_sf);
+            GdipDeleteFont(gp_font);
+            GdipDeleteFontFamily(gp_family);
+            GdipDeleteGraphics(tmp_graphics);
+        }
+        cleanup_screen_dc();
+        return Err("Failed to create temporary measurement bitmap".into());
+    }
+    let tmp_old_bmp = unsafe { SelectObject(tmp_dc, tmp_bmp as HGDIOBJ) };
+    if tmp_old_bmp.is_null() {
+        unsafe {
+            DeleteObject(tmp_bmp as HGDIOBJ);
+            DeleteDC(tmp_dc);
+            GdipDeleteStringFormat(gp_sf);
+            GdipDeleteFont(gp_font);
+            GdipDeleteFontFamily(gp_family);
+            GdipDeleteGraphics(tmp_graphics);
+        }
+        cleanup_screen_dc();
+        return Err("SelectObject failed for measurement bitmap".into());
+    }
 
     let mut mg: GpGraphics = std::ptr::null_mut();
     let text_w: i32;
@@ -1141,6 +1260,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
     }
 
     unsafe {
+        SelectObject(tmp_dc, tmp_old_bmp);
         DeleteObject(tmp_bmp as HGDIOBJ);
         DeleteDC(tmp_dc);
     }
@@ -1156,23 +1276,30 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     // ── Determine initial window position ──────
 
-    let (screen_w, screen_h) =
-        unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-
-    let (init_x, init_y) = if cfg.window_x == -1 || cfg.window_y == -1 {
-        // Auto-position: centered horizontally, 1/6 from top
-        ((screen_w - win_w) / 2, screen_h / 6)
+    let desired = if cfg.window_x == -1 || cfg.window_y == -1 {
+        POINT { x: 0, y: 0 }
     } else {
-        // Validate saved position against current screen bounds.
-        // If the screen resolution changed (e.g. laptop undocked),
-        // reset to 0,0 as requested.
-        let sx = cfg.window_x;
-        let sy = cfg.window_y;
-        if sx < 0 || sx > screen_w || sy < 0 || sy > screen_h {
-            (0, 0)
-        } else {
-            (sx, sy)
+        POINT {
+            x: cfg.window_x,
+            y: cfg.window_y,
         }
+    };
+    let work = monitor_work_area(desired)?;
+    let (init_x, init_y) = if cfg.window_x == -1 || cfg.window_y == -1 {
+        // Centre in the primary monitor work area, excluding the taskbar.
+        (
+            work.left + (work.right - work.left - win_w) / 2,
+            work.top + (work.bottom - work.top) / 6,
+        )
+    } else {
+        // Negative coordinates are valid on monitors left/above the primary.
+        // Clamp the complete window into the nearest monitor's work area.
+        (
+            cfg.window_x
+                .clamp(work.left, (work.right - win_w).max(work.left)),
+            cfg.window_y
+                .clamp(work.top, (work.bottom - win_h).max(work.top)),
+        )
     };
 
     // ── Create the layered window ──────────────
@@ -1255,7 +1382,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             0,
         )
     };
-    if bitmap.is_null() {
+    if bitmap.is_null() || bitmap_bits.is_null() {
         // Clean up previously allocated resources
         unsafe {
             DeleteDC(mem_dc);
@@ -1272,8 +1399,17 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         }
         return Err("CreateDIBSection failed".into());
     }
-    unsafe {
-        SelectObject(mem_dc, bitmap as HGDIOBJ);
+    let old_bitmap = unsafe { SelectObject(mem_dc, bitmap as HGDIOBJ) };
+    if old_bitmap.is_null() {
+        unsafe {
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteDC(mem_dc);
+            DestroyWindow(hwnd);
+            GdipDeleteStringFormat(gp_sf);
+            GdipDeleteFont(gp_font);
+            GdipDeleteFontFamily(gp_family);
+        }
+        return Err("SelectObject failed for clock bitmap".into());
     }
 
     let window_config = ClockWindowConfig {
@@ -1291,6 +1427,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         text_y_correction,
         mem_dc: RawPtr::from_ptr(mem_dc),
         bitmap: RawPtr::from_ptr(bitmap),
+        old_bitmap: RawPtr::from_ptr(old_bitmap),
         bitmap_bits: RawPtr::from_ptr(bitmap_bits),
         gp_font_family: GpObj(gp_family as isize),
         gp_font: GpObj(gp_font as isize),
@@ -1362,24 +1499,45 @@ pub fn get_current_opacity() -> u8 {
     0
 }
 
-#[allow(dead_code)]
-pub fn destroy_clock_window() {
-    if let Some(state_lock) = GUI_STATE.get() {
-        let mut state_opt = state_lock.lock().unwrap();
-        if let Some(ref state) = *state_opt {
-            unsafe {
-                KillTimer(state.hwnd.as_hwnd(), state.timer_update_id);
-                GdipDeleteFont(state.gp_font.gp_font());
-                GdipDeleteFontFamily(state.gp_font_family.gp_font_family());
-                GdipDeleteStringFormat(state.gp_string_format.gp_string_format());
-                DeleteObject(state.bitmap.as_hgdiobj());
-                DeleteDC(state.mem_dc.as_hdc());
-                DestroyWindow(state.hwnd.as_hwnd());
-            }
+fn destroy_clock_window() {
+    // Remove the state before DestroyWindow, because DestroyWindow synchronously
+    // sends WM_DESTROY and the window procedure may consult GUI_STATE.
+    let state = GUI_STATE
+        .get()
+        .and_then(|state_lock| state_lock.lock().unwrap_or_else(|e| e.into_inner()).take());
+    if let Some(state) = state {
+        // SAFETY: all handles are owned by state and cleanup occurs on the GUI
+        // thread. The original selected bitmap is restored before deletion.
+        unsafe {
+            KillTimer(state.hwnd.as_hwnd(), state.timer_update_id);
+            KillTimer(state.hwnd.as_hwnd(), ANIM_TIMER_ID);
+            GdipDeleteFont(state.gp_font.gp_font());
+            GdipDeleteFontFamily(state.gp_font_family.gp_font_family());
+            GdipDeleteStringFormat(state.gp_string_format.gp_string_format());
+            SelectObject(state.mem_dc.as_hdc(), state.old_bitmap.as_hgdiobj());
+            DeleteObject(state.bitmap.as_hgdiobj());
+            DeleteDC(state.mem_dc.as_hdc());
+            DestroyWindow(state.hwnd.as_hwnd());
         }
-        *state_opt = None;
     }
+    GUI_HWND_STATIC.store(0, Ordering::Release);
+    GUI_VISIBLE.store(false, Ordering::Release);
     gdiplus_shutdown();
+}
+
+pub fn destroy_windows() {
+    let panel = OPACITY_PANEL_HWND.swap(0, Ordering::AcqRel) as HWND;
+    if !panel.is_null() {
+        // SAFETY: panel is the live modeless window created by this module.
+        unsafe { DestroyWindow(panel) };
+    }
+    let font = OPACITY_PANEL_FONT.swap(0, Ordering::AcqRel) as HGDIOBJ;
+    if !font.is_null() {
+        // SAFETY: font was created by CreateFontW and is no longer selected
+        // after its child window has been destroyed.
+        unsafe { DeleteObject(font) };
+    }
+    destroy_clock_window();
 }
 
 // ───────────────────────────────────────────────
@@ -1414,25 +1572,10 @@ unsafe extern "system" {
     fn GetWindowTextW(hWnd: HWND, lpString: *mut u16, nMaxCount: i32) -> i32;
     fn IsWindowVisible(hWnd: HWND) -> i32;
     fn SetFocus(hWnd: HWND) -> HWND;
-    fn CreateFontW(
-        nHeight: i32,
-        nWidth: i32,
-        nEscapement: i32,
-        nOrientation: i32,
-        fnWeight: i32,
-        fdwItalic: u32,
-        fdwUnderline: u32,
-        fdwStrikeOut: u32,
-        fdwCharSet: u32,
-        fdwOutputPrecision: u32,
-        fdwClipPrecision: u32,
-        fdwQuality: u32,
-        fdwPitchAndFamily: u32,
-        lpszFace: *const u16,
-    ) -> HFONT;
 }
 
 static OPACITY_PANEL_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static OPACITY_PANEL_FONT: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static OPACITY_CLOSE_CALLBACK: OnceLock<Box<dyn Fn(u8) + Send + Sync>> = OnceLock::new();
 
 /// Register a callback invoked when the opacity panel is dismissed.
@@ -1661,10 +1804,9 @@ pub fn create_opacity_panel() -> Result<(), String> {
     let dlg_w = rc.right - rc.left;
     let dlg_h = rc.bottom - rc.top;
 
-    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let dlg_x = (screen_w - dlg_w) / 2;
-    let dlg_y = (screen_h / 3) - (dlg_h / 2);
+    let work = monitor_work_area(POINT { x: 0, y: 0 })?;
+    let dlg_x = work.left + (work.right - work.left - dlg_w) / 2;
+    let dlg_y = work.top + (work.bottom - work.top - dlg_h) / 3;
 
     let title_text = match crate::i18n::lang() {
         crate::i18n::Lang::Zh => "不透明度",
@@ -1694,8 +1836,9 @@ pub fn create_opacity_panel() -> Result<(), String> {
     }
 
     // ── DPI-scaled font for the edit control ──
+    // CreateFontW expects a logical pixel height, unlike GDI+ UNIT_POINT.
     let scaled_font_size = PANEL_FONT_SIZE_PT * scale;
-    let font_height = -(scaled_font_size) as i32;
+    let font_height = -((scaled_font_size * 96.0 / 72.0).round() as i32);
     let font_face = to_wide(FONT_NAME);
     let ui_font = unsafe {
         CreateFontW(
@@ -1742,7 +1885,8 @@ pub fn create_opacity_panel() -> Result<(), String> {
         }
     }
 
-    OPACITY_PANEL_HWND.store(hwnd as isize, Ordering::Relaxed);
+    OPACITY_PANEL_HWND.store(hwnd as isize, Ordering::Release);
+    OPACITY_PANEL_FONT.store(ui_font as isize, Ordering::Release);
     Ok(())
 }
 

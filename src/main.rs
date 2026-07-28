@@ -19,7 +19,7 @@ use tray_icon::{
 };
 
 use audio::AudioPlayer;
-use config::{Config, RingType};
+use config::Config;
 
 const PROCESS_GUID: &str = "F44E29E669346E0CC3105EA440E85C00";
 
@@ -77,6 +77,7 @@ struct MSG {
     lparam: isize,
     time: u32,
     pt: [i32; 2],
+    l_private: u32,
 }
 
 #[link(name = "user32")]
@@ -102,9 +103,12 @@ unsafe extern "system" {
     ) -> u32;
 
     fn SetProcessDPIAware() -> i32;
+    fn SetProcessDpiAwarenessContext(value: isize) -> i32;
 }
 
 const PROCESS_PER_MONITOR_DPI_AWARE: i32 = 2;
+// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
 #[link(name = "shcore")]
 unsafe extern "system" {
@@ -112,9 +116,12 @@ unsafe extern "system" {
 }
 
 fn set_dpi_aware() {
+    // SAFETY: process DPI awareness is configured once, before any HWND exists.
     unsafe {
-        if SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) != 0 {
-            let _ = SetProcessDPIAware();
+        if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0
+            && SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) != 0
+        {
+            SetProcessDPIAware();
         }
     }
 }
@@ -139,18 +146,41 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+fn report_error(context: &str, error: impl std::fmt::Display) {
+    let message = format!("{context}: {error}");
+    debug_log(format!("[main] {message}\n"));
+    win_msgbox_timeout::error_msgbox(&message, "Tip Clock", 10);
+}
+
+fn shutdown_runtime() {
+    hotkey::shutdown();
+    gui::destroy_windows();
+}
+
+fn quit_app(code: i32) -> ! {
+    shutdown_runtime();
+    std::process::exit(code);
+}
+
 fn restart_app() {
-    if let Ok(exe_path) = std::env::current_exe() {
-        debug_log(format!("[main] restarting: {:?}\n", exe_path));
-        // Release single-instance lock before spawning new process
-        if let Some(mtx) = INSTANCE.get()
-            && let Ok(mut guard) = mtx.lock()
-        {
-            guard.take(); // drop SingleInstance here
+    let exe_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            debug_log(format!(
+                "[main] cannot locate executable for restart: {e}\n"
+            ));
+            return;
         }
-        let _ = std::process::Command::new(&exe_path).spawn();
+    };
+    debug_log(format!("[main] restarting: {:?}\n", exe_path));
+    shutdown_runtime();
+    if let Some(mtx) = INSTANCE.get() {
+        mtx.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
-    std::process::exit(0);
+    match std::process::Command::new(&exe_path).spawn() {
+        Ok(_) => std::process::exit(0),
+        Err(e) => fatal(&format!("Failed to restart Tip Clock: {e}")),
+    }
 }
 
 // ───────────────────────────────────────────────
@@ -170,13 +200,20 @@ static INSTANCE: OnceLock<std::sync::Mutex<Option<SingleInstance>>> = OnceLock::
 
 fn next_label(cfg: &Config) -> String {
     let now = Local::now();
-    match cfg.next_reminder(now.hour(), now.minute()) {
-        Some((h, m, ring)) => {
+    match cfg.next_reminder(now.hour(), now.minute(), now.second()) {
+        Some((h, m, s, ring, tomorrow)) => {
+            let day = if tomorrow {
+                i18n::tr(i18n::TrKey::Tomorrow)
+            } else {
+                ""
+            };
             format!(
-                "{}  {:02}:{:02}  ({})",
+                "{}  {}{:02}:{:02}:{:02}  ({})",
                 i18n::tr(i18n::TrKey::NextReminder),
+                day,
                 h,
                 m,
+                s,
                 ring.display_name()
             )
         }
@@ -227,7 +264,7 @@ fn pump_messages() {
                 break;
             }
             if msg.message == WM_QUIT {
-                std::process::exit(0);
+                quit_app(0);
             }
             if msg.message != 0x0113 {
                 // Log every dispatched message with hwnd and message code
@@ -276,7 +313,7 @@ const KEY_QUERY_VALUE: u32 = 0x0001;
 const REG_SZ: u32 = 1;
 const ERROR_SUCCESS: i32 = 0;
 
-fn update_auto_start(enable: bool) {
+fn update_auto_start(enable: bool) -> Result<(), String> {
     unsafe {
         let sub_key = audio::to_wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
         let value_name = audio::to_wide("TipClock");
@@ -291,27 +328,40 @@ fn update_auto_start(enable: bool) {
         );
 
         if result != ERROR_SUCCESS {
-            return;
+            return Err(format!("RegOpenKeyExW failed with code {result}"));
         }
 
-        if enable {
-            if let Ok(exe_path) = std::env::current_exe() {
-                let path_str = format!("{}", exe_path.display());
-                let wide_path = audio::to_wide(&path_str);
-                RegSetValueExW(
-                    hkey,
-                    value_name.as_ptr(),
-                    0,
-                    REG_SZ,
-                    wide_path.as_ptr() as *const u8,
-                    (wide_path.len() * 2) as u32, // bytes including null
-                );
-            }
+        let operation = if enable {
+            let exe_path = std::env::current_exe()
+                .map_err(|e| format!("Failed to get executable path: {e}"))?;
+            // Run-key command lines must quote executable paths containing
+            // spaces; quoting unconditionally is safe and unambiguous.
+            let wide_path = audio::to_wide(&format!("\"{}\"", exe_path.display()));
+            let byte_len = wide_path
+                .len()
+                .checked_mul(std::mem::size_of::<u16>())
+                .and_then(|len| u32::try_from(len).ok())
+                .ok_or("Auto-start command is too long")?;
+            RegSetValueExW(
+                hkey,
+                value_name.as_ptr(),
+                0,
+                REG_SZ,
+                wide_path.as_ptr().cast(),
+                byte_len,
+            )
         } else {
-            RegDeleteValueW(hkey, value_name.as_ptr());
-        }
+            RegDeleteValueW(hkey, value_name.as_ptr())
+        };
 
-        RegCloseKey(hkey);
+        let close_result = RegCloseKey(hkey);
+        if operation != ERROR_SUCCESS && !(operation == 2 && !enable) {
+            return Err(format!("Failed to update auto-start (code {operation})"));
+        }
+        if close_result != ERROR_SUCCESS {
+            return Err(format!("RegCloseKey failed with code {close_result}"));
+        }
+        Ok(())
     }
 }
 
@@ -390,13 +440,16 @@ fn main() {
     let config = Config::load_or_create().unwrap_or_else(|e| fatal(&e));
     debug_log(format!("{:?}", config));
 
-    // Apply auto-start setting
-    update_auto_start(config.general.auto_start);
+    // Apply auto-start setting. This is non-fatal because reminders can still
+    // run, but the failure is made visible in debug diagnostics.
+    if let Err(e) = update_auto_start(config.general.auto_start) {
+        debug_log(format!("[main] auto-start update failed: {e}\n"));
+    }
 
     let app_name = i18n::tr(i18n::TrKey::AppName);
 
-    // Audio
-    let audio = AudioPlayer::new(config.general.volume);
+    // Audio: volume is applied only to this process' output stream.
+    let audio = AudioPlayer::new(config.general.volume).unwrap_or_else(|e| fatal(&e));
 
     // Create GUI clock window (hidden)
     gui::create_clock_window(&config.general).unwrap_or_else(|e| fatal(&e));
@@ -404,7 +457,7 @@ fn main() {
     gui::create_opacity_panel().unwrap_or_else(|e| fatal(&e));
     let gui_hwnd = gui::get_hwnd();
 
-    // Hotkey — dedicated hidden window for reliable WM_HOTKEY delivery
+    // OS-managed global hotkey (MOD_NOREPEAT avoids key-repeat toggling).
     hotkey::init(
         &config.general.hotkey_mod,
         &config.general.hotkey_key,
@@ -482,7 +535,7 @@ fn main() {
         match event.id.as_ref() {
             "exit" => {
                 debug_log("[main] tray menu: exit\n");
-                std::process::exit(0);
+                quit_app(0);
             }
             "restart" => {
                 debug_log("[main] tray menu: restart\n");
@@ -490,7 +543,10 @@ fn main() {
             }
             "skip_next" => {
                 debug_log("[main] tray menu: skip next\n");
-                SKIP_COUNT.get().unwrap().fetch_add(1, Ordering::Relaxed);
+                let count = SKIP_COUNT.get().unwrap();
+                let _ = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.saturating_add(1))
+                });
                 NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
             }
             "toggle_pause" => {
@@ -513,7 +569,7 @@ fn main() {
                 let path = cfg.config_path.clone();
                 drop(cfg);
                 if let Err(e) = std::process::Command::new("notepad.exe").arg(&path).spawn() {
-                    debug_log(format!("[main] failed to open notepad: {e}\n"));
+                    report_error("Failed to open config in Notepad", e);
                 }
             }
             "text_color" => {
@@ -537,21 +593,26 @@ fn main() {
     })));
 
     let menu = Menu::new();
-    menu.append(&next_item).ok();
-    menu.append(&sep).ok();
-    menu.append(&show_item).ok();
-    menu.append(&skip_item).ok();
-    menu.append(&pause_item).ok();
-    menu.append(&sep2).ok();
-    menu.append(&edit_item).ok();
-    menu.append(&sep3).ok();
-    menu.append(&color_item).ok();
-    menu.append(&bg_color_item).ok();
-    menu.append(&opacity_item).ok();
-    menu.append(&sep4).ok();
-    menu.append(&restart_item).ok();
-    menu.append(&sep5).ok();
-    menu.append(&exit_item).ok();
+    for item in [
+        &next_item as &dyn tray_icon::menu::IsMenuItem,
+        &sep,
+        &show_item,
+        &skip_item,
+        &pause_item,
+        &sep2,
+        &edit_item,
+        &sep3,
+        &color_item,
+        &bg_color_item,
+        &opacity_item,
+        &sep4,
+        &restart_item,
+        &sep5,
+        &exit_item,
+    ] {
+        menu.append(item)
+            .unwrap_or_else(|e| fatal(&format!("Failed to build tray menu: {e}")));
+    }
 
     // Create tray icon from embedded 256×256 RGBA raw data
     let icon_raw: &[u8] = include_bytes!("../res/ico_raw");
@@ -592,7 +653,7 @@ fn main() {
 
     // ── Main loop ──────────────────────────────
 
-    let mut last_played_second: Option<(u32, u32, u32)> = None;
+    let mut last_checked_second: Option<u32> = None;
     let mut last_menu_refresh = std::time::Instant::now();
 
     // Initial menu refresh
@@ -609,10 +670,10 @@ fn main() {
         }
         pump_messages();
 
-        // WM_USER_HOTKEY is posted by the keyboard hook in hotkey.rs
-        // and dispatched to the clock window via pump_messages above.
+        // WM_HOTKEY is dispatched to the clock window by the message pump.
         let now = Local::now();
         let current = (now.hour(), now.minute(), now.second());
+        let current_second = current.0 * 3600 + current.1 * 60 + current.2;
 
         // Menu state refresh (immediate if needed, otherwise periodic)
         if NEED_REFRESH.get().unwrap().swap(false, Ordering::Relaxed) {
@@ -621,15 +682,22 @@ fn main() {
         }
 
         // Schedule check: every second
-        if last_played_second != Some(current) {
-            last_played_second = Some(current);
+        if last_checked_second != Some(current_second) {
+            // Do not replay the entire day on startup or after midnight. For a
+            // normal forward tick, include all seconds crossed since the last
+            // iteration so brief UI stalls do not lose reminders.
+            let range_start = match last_checked_second {
+                Some(previous) if previous < current_second => previous,
+                _ => current_second.saturating_sub(1),
+            };
+            last_checked_second = Some(current_second);
 
             let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
 
             // Scope the config lock so it's released before refresh_menu_items (avoids deadlock)
             let matches_found = {
                 let cfg = CONFIG.get().unwrap().lock().unwrap();
-                let entries = cfg.entries_at(current.0, current.1, current.2);
+                let entries = cfg.entries_between(range_start, current_second);
 
                 // Determine if we should skip the next match
                 let do_skip = if paused {
@@ -645,21 +713,20 @@ fn main() {
                     false
                 };
 
-                if !do_skip {
+                if !do_skip && !entries.is_empty() {
                     for entry in &entries {
-                        if entry.ring != RingType::None {
-                            debug_log(format!(
-                                "[main] schedule match at {:02}:{:02}:{:02}, ring={:?}\n",
-                                current.0, current.1, current.2, entry.ring
-                            ));
-                            AUDIO.get().unwrap().play(
-                                entry.ring,
-                                entry.custom_file.as_deref(),
-                                &cfg.exe_dir,
-                            );
-                            gui::show_clock();
-                        }
+                        debug_log(format!(
+                            "[main] schedule match at {:02}:{:02}:{:02}, ring={:?}\n",
+                            current.0, current.1, current.2, entry.ring
+                        ));
+                        AUDIO.get().unwrap().play(
+                            entry.ring,
+                            entry.custom_file.as_deref(),
+                            &cfg.exe_dir,
+                        );
                     }
+                    // RingType::None means silent reminder, not no reminder.
+                    gui::show_clock();
                     true
                 } else {
                     false

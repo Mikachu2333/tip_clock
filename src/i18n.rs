@@ -42,6 +42,7 @@ unsafe extern "system" {
 pub enum TrKey {
     AppName,
     NextReminder,
+    Tomorrow,
     NoMoreReminders,
     SHClock,
     SkipNext,
@@ -76,6 +77,10 @@ pub fn tr(key: TrKey) -> &'static str {
         TrKey::NextReminder => match lang {
             Lang::En => "Next",
             Lang::Zh => "下次",
+        },
+        TrKey::Tomorrow => match lang {
+            Lang::En => "Tomorrow ",
+            Lang::Zh => "明日 ",
         },
         TrKey::NoMoreReminders => match lang {
             Lang::En => "No more reminders today",
