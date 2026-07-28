@@ -108,6 +108,7 @@ unsafe extern "system" {
     ) -> i32;
     fn GdipSetTextRenderingHint(graphics: GpGraphics, mode: i32) -> i32;
     fn GdipSetSmoothingMode(graphics: GpGraphics, mode: i32) -> i32;
+    fn GdipGetFontHeight(font: GpFont, graphics: GpGraphics, height: *mut f32) -> i32;
 }
 
 // ───────────────────────────────────────────────
@@ -435,6 +436,7 @@ struct GuiState {
     shown_at: Option<std::time::Instant>,
     width: i32,
     height: i32,
+    text_h: i32, // measured text height for vertical centering
     // GDI objects
     mem_dc: RawPtr,
     bitmap: RawPtr,
@@ -642,11 +644,15 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
         let mut text_brush: GpBrush = std::ptr::null_mut();
         if GdipCreateSolidFill(text_argb, &mut text_brush) == GDI_PLUS_OK {
             let text_wide = to_wide(&state.last_time_str);
+            // Center text vertically: offset the layout rect so the known
+            // text height sits in the middle of the window.
+            let th = state.text_h as f32;
+            let y_off = ((h - state.text_h) as f32) / 2.0;
             let layout_rect = RectF {
                 x: 0.0,
-                y: 0.0,
+                y: y_off,
                 width: w as f32,
-                height: h as f32,
+                height: th,
             };
             GdipDrawString(
                 graphics,
@@ -857,13 +863,14 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     // Measure the display string extent
     let display_wide = to_wide(DISPLAY_STR);
-    // Dynamic measurement using a temporary GDI+ bitmap:
-    let measure_w = 500i32;
-    let measure_h = 100i32;
+    // Dynamic measurement using a temporary GDI+ bitmap (top-down DIB).
+    // Use a generous area to avoid clipping at any DPI.
+    let measure_w = 1200i32;
+    let measure_h = 200i32;
     let bmi = BITMAPINFOHEADER {
         bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
         bi_width: measure_w,
-        bi_height: measure_h,
+        bi_height: -measure_h, // negative = top-down DIB
         bi_planes: 1,
         bi_bit_count: 32,
         bi_compression: BI_RGB,
@@ -889,7 +896,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     let mut mg: GpGraphics = std::ptr::null_mut();
     let text_w: i32;
-    let text_h: i32;
+    let mut text_h: i32;
 
     if unsafe { GdipCreateFromHDC(tmp_dc, &mut mg) } == GDI_PLUS_OK {
         // Fill black, draw white text, then scan for white pixels
@@ -959,6 +966,15 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             text_h = 28;
         }
 
+        // Use GDI+ font height as floor — pixel scan may miss antialiased edges.
+        let mut gp_font_h: f32 = 0.0;
+        if unsafe { GdipGetFontHeight(gp_font, mg, &mut gp_font_h) } == GDI_PLUS_OK {
+            let fh = gp_font_h.ceil() as i32;
+            if fh > text_h {
+                text_h = fh;
+            }
+        }
+
         unsafe {
             GdipDeleteBrush(bb);
             GdipDeleteBrush(wb);
@@ -1013,7 +1029,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
     let bmi = BITMAPINFOHEADER {
         bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
         bi_width: win_w,
-        bi_height: win_h,
+        bi_height: -win_h, // negative = top-down DIB (consistent with measurement)
         bi_planes: 1,
         bi_bit_count: 32,
         bi_compression: BI_RGB,
@@ -1051,6 +1067,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         shown_at: None,
         width: win_w,
         height: win_h,
+        text_h,
         mem_dc: RawPtr::from_ptr(mem_dc),
         bitmap: RawPtr::from_ptr(bitmap),
         bitmap_bits: RawPtr::from_ptr(bitmap_bits),

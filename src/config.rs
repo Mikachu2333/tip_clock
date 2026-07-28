@@ -320,6 +320,7 @@ impl Config {
             .replace('＃', "#") // full-width hash (comment)
             .replace('【', "[") // full-width bracket
             .replace('】', "]")
+            .replace('。', ".")
             .replace('　', " "); // full-width space
 
         // Auto-correct bare time values: `time = 09:00` → `time = "09:00"`

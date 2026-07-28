@@ -41,7 +41,6 @@ type HWND = *mut std::ffi::c_void;
 //  ChooseFont / ChooseColor dialog structures
 // ───────────────────────────────────────────────
 
-
 #[allow(dead_code)]
 #[repr(C)]
 struct CHOOSECOLORW {
