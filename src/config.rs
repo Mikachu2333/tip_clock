@@ -162,7 +162,7 @@ const CONFIG_TEMPLATE_ZH: &str = r#"# ──────────────
 # 开机自启 (Windows 启动时自动运行)
 auto_start = {auto_start}
 
-# 背景颜色 RGB (0-255), 透明度 (0-100, 0=全透明)
+# 背景颜色 RGB (0-255), 不透明度 (0-100, 0=全透明)
 bg_r = {bg_r}
 bg_g = {bg_g}
 bg_b = {bg_b}
@@ -228,7 +228,7 @@ const CONFIG_TEMPLATE_EN: &str = r#"# ──────────────
 # Auto-start with Windows
 auto_start = {auto_start}
 
-# Background color RGB (0-255), opacity (0-100, 0=fully transparent)
+# Background color RGB (0-255), opacity (0-100, 0=fully transparent, 100=solid)
 bg_r = {bg_r}
 bg_g = {bg_g}
 bg_b = {bg_b}

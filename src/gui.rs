@@ -304,6 +304,7 @@ unsafe extern "system" {
     fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> i32;
     fn GetCursorPos(lpPoint: *mut POINT) -> i32;
     fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> i32;
+    fn AdjustWindowRectEx(lpRect: *mut RECT, dwStyle: u32, bMenu: i32, dwExStyle: u32) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -1272,6 +1273,32 @@ pub fn update_config(cfg: &GeneralConfig) {
     }
 }
 
+/// Update only the background opacity and redraw if visible.
+pub fn update_opacity(opacity: u8) {
+    if let Some(state_lock) = GUI_STATE.get() {
+        let mut state_opt = state_lock.lock().unwrap();
+        if let Some(ref mut state) = *state_opt {
+            state.config.bg_color.3 = opacity;
+            if GUI_VISIBLE.load(Ordering::Relaxed) {
+                unsafe {
+                    redraw_layered_window(state);
+                }
+            }
+        }
+    }
+}
+
+/// Get the current background opacity from GUI state.
+pub fn get_current_opacity() -> u8 {
+    if let Some(state_lock) = GUI_STATE.get() {
+        let state_opt = state_lock.lock().unwrap();
+        if let Some(ref state) = *state_opt {
+            return state.config.bg_color.3;
+        }
+    }
+    0
+}
+
 #[allow(dead_code)]
 pub fn destroy_clock_window() {
     if let Some(state_lock) = GUI_STATE.get() {
@@ -1290,4 +1317,308 @@ pub fn destroy_clock_window() {
         *state_opt = None;
     }
     gdiplus_shutdown();
+}
+
+// ───────────────────────────────────────────────
+//  Opacity panel — modeless floating window
+// ───────────────────────────────────────────────
+
+const WS_CAPTION_WIN: u32 = 0x00C0_0000;
+const WS_SYSMENU_WIN: u32 = 0x0008_0000;
+
+const WM_ACTIVATE: u32 = 0x0006;
+const WM_COMMAND: u32 = 0x0111;
+const EN_CHANGE: u32 = 0x0300;
+const ES_NUMBER: u32 = 0x2000;
+const WS_CHILD: u32 = 0x4000_0000;
+const WS_VISIBLE: u32 = 0x1000_0000;
+const WS_BORDER: u32 = 0x0080_0000;
+const WS_TABSTOP: u32 = 0x0001_0000;
+const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
+const SW_SHOW: i32 = 5;
+const WM_SETFONT: u32 = 0x0030;
+const PANEL_FONT_SIZE_PT: f32 = 9.0;
+
+type HFONT = *mut std::ffi::c_void;
+
+// Child control ID for the opacity panel
+const IDC_OPACITY_EDIT: isize = 101;
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetDlgItem(hDlg: HWND, nIDDlgItem: i32) -> HWND;
+    fn SetWindowTextW(hWnd: HWND, lpString: *const u16) -> i32;
+    fn GetWindowTextW(hWnd: HWND, lpString: *mut u16, nMaxCount: i32) -> i32;
+    fn IsWindowVisible(hWnd: HWND) -> i32;
+    fn SetFocus(hWnd: HWND) -> HWND;
+    fn CreateFontW(
+        nHeight: i32,
+        nWidth: i32,
+        nEscapement: i32,
+        nOrientation: i32,
+        fnWeight: i32,
+        fdwItalic: u32,
+        fdwUnderline: u32,
+        fdwStrikeOut: u32,
+        fdwCharSet: u32,
+        fdwOutputPrecision: u32,
+        fdwClipPrecision: u32,
+        fdwQuality: u32,
+        fdwPitchAndFamily: u32,
+        lpszFace: *const u16,
+    ) -> HFONT;
+}
+
+static OPACITY_PANEL_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static OPACITY_CLOSE_CALLBACK: OnceLock<Box<dyn Fn(u8) + Send + Sync>> = OnceLock::new();
+
+/// Register a callback invoked when the opacity panel is dismissed.
+/// The callback receives the final opacity value (0–100).
+pub fn set_opacity_close_callback<F: Fn(u8) + Send + Sync + 'static>(f: F) {
+    OPACITY_CLOSE_CALLBACK.set(Box::new(f)).ok();
+}
+
+fn fire_opacity_close() {
+    if let Some(cb) = OPACITY_CLOSE_CALLBACK.get() {
+        cb(get_current_opacity());
+    }
+}
+
+/// Create the modeless opacity panel (hidden).
+/// Must be called once from the main thread after `create_clock_window`.
+pub fn create_opacity_panel() -> Result<(), String> {
+    let class_w = to_wide("TipClockOpacityPanel");
+
+    let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
+    if hinst.is_null() {
+        return Err("GetModuleHandleW returned NULL".into());
+    }
+
+    let wc = WNDCLASSEXW {
+        cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        style: 0,
+        lpfn_wnd_proc: opacity_panel_wndproc,
+        cb_cls_extra: 0,
+        cb_wnd_extra: 0,
+        h_instance: hinst,
+        h_icon: std::ptr::null_mut(),
+        h_cursor: unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) },
+        hbr_background: std::ptr::null_mut(),
+        lpsz_menu_name: std::ptr::null(),
+        lpsz_class_name: class_w.as_ptr(),
+        h_icon_sm: std::ptr::null_mut(),
+    };
+
+    let atom = unsafe { RegisterClassExW(&wc) };
+    if atom == 0 {
+        return Err("RegisterClassExW failed for opacity panel".into());
+    }
+
+    // ── DPI-aware sizing, same pattern as the clock window ──
+    let dpi = get_system_dpi();
+    let scaled_font_size = PANEL_FONT_SIZE_PT * (dpi / 96.0);
+    let scale = dpi / 96.0;
+
+    // Base client area at 96 DPI: label row + edit row
+    let client_w: i32 = (360.0 * scale) as i32;
+    let client_h: i32 = (84.0 * scale) as i32;
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: client_w,
+        bottom: client_h,
+    };
+    unsafe {
+        AdjustWindowRectEx(&mut rc, WS_CAPTION_WIN | WS_SYSMENU_WIN, 0, 0);
+    }
+    let dlg_w = rc.right - rc.left;
+    let dlg_h = rc.bottom - rc.top;
+
+    // Position: centre of screen, shifted upward a little
+    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    let dlg_x = (screen_w - dlg_w) / 2;
+    let dlg_y = (screen_h / 3) - (dlg_h / 2);
+
+    let title_text = match crate::i18n::lang() {
+        crate::i18n::Lang::Zh => "不透明度",
+        _ => "Opacity",
+    };
+    let title_w = to_wide(title_text);
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            class_w.as_ptr(),
+            title_w.as_ptr(),
+            WS_CAPTION_WIN | WS_SYSMENU_WIN,
+            dlg_x,
+            dlg_y,
+            dlg_w,
+            dlg_h,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if hwnd.is_null() {
+        return Err("CreateWindowExW failed for opacity panel".into());
+    }
+
+    // ── Create DPI-scaled font (9pt ClearType, same face as clock) ──
+    let font_height = -(scaled_font_size) as i32;
+    let face_name = to_wide(FONT_NAME);
+    let ui_font = unsafe {
+        CreateFontW(
+            font_height,
+            0,
+            0,
+            0,
+            400, // FW_NORMAL
+            0,
+            0,
+            0,
+            1, // DEFAULT_CHARSET
+            0, // OUT_DEFAULT_PRECIS
+            0, // CLIP_DEFAULT_PRECIS
+            5, // CLEARTYPE_QUALITY
+            0, // DEFAULT_PITCH | FF_DONTCARE
+            face_name.as_ptr(),
+        )
+    };
+
+    unsafe {
+        // Explanatory label
+        let explain_text = match crate::i18n::lang() {
+            crate::i18n::Lang::Zh => "背景不透明度 (0=全透明, 100=不透明)",
+            _ => "Background opacity (0=transparent, 100=solid)",
+        };
+        let explain_w = to_wide(explain_text);
+        let label = CreateWindowExW(
+            0,
+            to_wide("STATIC").as_ptr(),
+            explain_w.as_ptr(),
+            WS_CHILD | WS_VISIBLE,
+            (10.0 * scale) as i32,
+            (10.0 * scale) as i32,
+            client_w - (20.0 * scale) as i32,
+            (22.0 * scale) as i32,
+            hwnd,
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null_mut(),
+        );
+        if !ui_font.is_null() {
+            SendMessageW(label, WM_SETFONT, ui_font as WPARAM, 1);
+        }
+
+        // Numeric input box
+        let edit_class = to_wide("EDIT");
+        let init_val = to_wide(&get_current_opacity().to_string());
+        let edit = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            edit_class.as_ptr(),
+            init_val.as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_NUMBER,
+            (10.0 * scale) as i32,
+            (38.0 * scale) as i32,
+            (80.0 * scale) as i32,
+            (26.0 * scale) as i32,
+            hwnd,
+            IDC_OPACITY_EDIT as *mut std::ffi::c_void as HINSTANCE,
+            hinst,
+            std::ptr::null_mut(),
+        );
+        if !ui_font.is_null() {
+            SendMessageW(edit, WM_SETFONT, ui_font as WPARAM, 1);
+        }
+    }
+
+    OPACITY_PANEL_HWND.store(hwnd as isize, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Toggle opacity panel visibility.
+pub fn toggle_opacity_panel() {
+    let hwnd = OPACITY_PANEL_HWND.load(Ordering::Relaxed) as HWND;
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        if IsWindowVisible(hwnd) != 0 {
+            // Hide
+            ShowWindow(hwnd, SW_HIDE);
+            fire_opacity_close();
+        } else {
+            // Sync edit box to current opacity before showing
+            let edit = GetDlgItem(hwnd, IDC_OPACITY_EDIT as i32);
+            if !edit.is_null() {
+                let text = format!("{}", get_current_opacity());
+                let text_w = to_wide(&text);
+                SetWindowTextW(edit, text_w.as_ptr());
+            }
+            ShowWindow(hwnd, SW_SHOW);
+            // Focus and select all text in the edit box for quick replacement
+            let edit = GetDlgItem(hwnd, IDC_OPACITY_EDIT as i32);
+            if !edit.is_null() {
+                SetFocus(edit);
+                // EM_SETSEL = 0x00B1: select all
+                SendMessageW(edit, 0x00B1, 0, -1);
+            }
+        }
+    }
+}
+
+/// Read the edit control, parse value (clamp 0–100), and update opacity in real-time.
+fn update_opacity_from_edit(hwnd: HWND) {
+    let edit = unsafe { GetDlgItem(hwnd, IDC_OPACITY_EDIT as i32) };
+    if edit.is_null() {
+        return;
+    }
+    let mut buf = [0u16; 8];
+    let len = unsafe { GetWindowTextW(edit, buf.as_mut_ptr(), buf.len() as i32) };
+    if len == 0 {
+        return; // empty input, don't change
+    }
+    let text = String::from_utf16_lossy(&buf[..len as usize]);
+    if let Ok(val) = text.parse::<u32>() {
+        update_opacity(val.min(100) as u8);
+    }
+}
+
+unsafe extern "system" fn opacity_panel_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_COMMAND => {
+            let code = ((wparam >> 16) & 0xFFFF) as u32;
+            let ctrl_id = (wparam & 0xFFFF) as isize;
+            if ctrl_id == IDC_OPACITY_EDIT && code == EN_CHANGE {
+                update_opacity_from_edit(hwnd);
+            }
+            return 0;
+        }
+        WM_ACTIVATE => {
+            // Low word of wparam: WA_INACTIVE = 0, WA_ACTIVE = 1, WA_CLICKACTIVE = 2
+            let code = (wparam as u32) & 0xFFFF;
+            if code == 0 {
+                // Lost activation — dismiss
+                unsafe { ShowWindow(hwnd, SW_HIDE) };
+                fire_opacity_close();
+            }
+            return 0;
+        }
+        WM_CLOSE => {
+            unsafe { ShowWindow(hwnd, SW_HIDE) };
+            fire_opacity_close();
+            return 0;
+        }
+        _ => {}
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }

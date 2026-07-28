@@ -386,6 +386,8 @@ fn main() {
 
     // Create GUI clock window (hidden)
     gui::create_clock_window(&config.general).unwrap_or_else(|e| fatal(&e));
+    // Create opacity panel (hidden, modeless)
+    gui::create_opacity_panel().unwrap_or_else(|e| fatal(&e));
     let gui_hwnd = gui::get_hwnd();
 
     // Hotkey — dedicated hidden window for reliable WM_HOTKEY delivery
@@ -421,6 +423,16 @@ fn main() {
         }
     });
 
+    // Register callback to persist opacity on panel close
+    gui::set_opacity_close_callback(|opacity| {
+        if let Some(cfg_lock) = CONFIG.get()
+            && let Ok(mut cfg) = cfg_lock.lock()
+        {
+            cfg.general.bg_opacity = opacity;
+            let _ = cfg.save_to_file();
+        }
+    });
+
     // ── Build tray menu ────────────────────────
 
     let next_item = MenuItem::new(
@@ -434,6 +446,7 @@ fn main() {
     let edit_item = MenuItem::with_id("edit_config", i18n::tr(i18n::TrKey::EditConfig), true, None);
     let color_item = MenuItem::with_id("text_color", i18n::tr(i18n::TrKey::TextColor), true, None);
     let bg_color_item = MenuItem::with_id("bg_color", i18n::tr(i18n::TrKey::BgColor), true, None);
+    let opacity_item = MenuItem::with_id("opacity", i18n::tr(i18n::TrKey::Opacity), true, None);
     let exit_item = MenuItem::with_id("exit", i18n::tr(i18n::TrKey::Exit), true, None);
     let sep = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
@@ -483,6 +496,10 @@ fn main() {
                 dialog_choose_color(ColorKind::Bg);
                 NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
             }
+            "opacity" => {
+                debug_log("[main] tray menu: opacity\n");
+                gui::toggle_opacity_panel();
+            }
             _ => {
                 debug_log(format!("[main] tray menu: unknown id '{:?}'\n", event.id));
             }
@@ -500,6 +517,7 @@ fn main() {
     menu.append(&sep3).ok();
     menu.append(&color_item).ok();
     menu.append(&bg_color_item).ok();
+    menu.append(&opacity_item).ok();
     menu.append(&sep4).ok();
     menu.append(&exit_item).ok();
 

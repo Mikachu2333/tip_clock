@@ -52,6 +52,7 @@ pub enum TrKey {
     EditConfig,
     TextColor,
     BgColor,
+    Opacity,
 }
 
 /// Lazy-initialized language
@@ -115,6 +116,10 @@ pub fn tr(key: TrKey) -> &'static str {
         TrKey::BgColor => match lang {
             Lang::En => "Background Color...",
             Lang::Zh => "背景颜色...",
+        },
+        TrKey::Opacity => match lang {
+            Lang::En => "Opacity",
+            Lang::Zh => "不透明度",
         },
     }
 }

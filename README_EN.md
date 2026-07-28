@@ -59,7 +59,7 @@ Edit `config.toml` (in the same folder as the EXE) and restart the program.
 # Launch on Windows startup
 auto_start = false
 
-# Background color RGB (0-255), opacity (0-100, 0=fully transparent)
+# Background color RGB (0-255), opacity (0-100, 0=fully transparent, 100=solid)
 bg_r = 255
 bg_g = 255
 bg_b = 255
@@ -133,16 +133,17 @@ custom_file = "lunch"
 
 ## Tray Menu
 
-| Item                    | Action                           |
-| ----------------------- | -------------------------------- |
-| Next                    | Show next reminder time and type |
-| Show Clock / Hide Clock | Toggle clock visibility          |
-| Skip Next               | Skip the upcoming reminder       |
-| Pause / Resume          | Pause or resume all reminders    |
-| Edit Config             | Open config.toml in Notepad      |
-| Text Color...           | Change clock text color          |
-| Background Color...     | Change clock background color    |
-| Exit                    | Quit the program                 |
+| Item                    | Action                               |
+| ----------------------- | ------------------------------------ |
+| Next                    | Show next reminder time and type     |
+| Show Clock / Hide Clock | Toggle clock visibility              |
+| Skip Next               | Skip the upcoming reminder           |
+| Pause / Resume          | Pause or resume all reminders        |
+| Edit Config             | Open config.toml in Notepad          |
+| Text Color...           | Change clock text color              |
+| Background Color...     | Change clock background color        |
+| Opacity                 | Adjust background opacity via slider |
+| Exit                    | Quit the program                     |
 
 **Left-click** the tray icon = toggle clock
 **Right-click** the tray icon = open menu
