@@ -1,73 +1,65 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 type HWND = *mut std::ffi::c_void;
+type HHOOK = *mut std::ffi::c_void;
+type HINSTANCE = *mut std::ffi::c_void;
 
 const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
 const MOD_SHIFT: u32 = 0x0004;
 const MOD_WIN: u32 = 0x0008;
-const MOD_NOREPEAT: u32 = 0x4000;
 
-const WM_HOTKEY: u32 = 0x0312;
-const WM_DESTROY: u32 = 0x0002;
-const HOTKEY_ID: i32 = 1;
+const WH_KEYBOARD_LL: i32 = 13;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+#[allow(dead_code)]
+const LLKHF_ALTDOWN: u32 = 0x0020;
 
 /// Custom message posted to the main window when hotkey fires.
 pub const WM_USER_HOTKEY: u32 = 0x0401;
 
 #[link(name = "user32")]
 unsafe extern "system" {
-    fn RegisterHotKey(hWnd: HWND, id: i32, fsModifiers: u32, vk: u32) -> i32;
-    fn UnregisterHotKey(hWnd: HWND, id: i32) -> i32;
-    fn CreateWindowExW(
-        dwExStyle: u32,
-        lpClassName: *const u16,
-        lpWindowName: *const u16,
-        dwStyle: u32,
-        x: i32,
-        y: i32,
-        nWidth: i32,
-        nHeight: i32,
-        hWndParent: HWND,
-        hMenu: *mut std::ffi::c_void,
-        hInstance: *mut std::ffi::c_void,
-        lpParam: *mut std::ffi::c_void,
-    ) -> HWND;
-    fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) -> isize;
-    fn RegisterClassExW(lpWndClass: *const WNDCLASSEXW) -> u16;
-    fn DestroyWindow(hWnd: HWND) -> i32;
+    fn SetWindowsHookExW(
+        idHook: i32,
+        lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
+        hMod: HINSTANCE,
+        dwThreadId: u32,
+    ) -> HHOOK;
+
+    fn UnhookWindowsHookEx(hhk: HHOOK) -> i32;
+    fn CallNextHookEx(hhk: HHOOK, nCode: i32, wParam: usize, lParam: isize) -> isize;
+    fn GetKeyState(nVirtKey: i32) -> i16;
     fn PostMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) -> i32;
+    fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
 }
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn GetModuleHandleW(lpModuleName: *const u16) -> *mut std::ffi::c_void;
 }
 
-#[repr(C)]
-struct WNDCLASSEXW {
-    cb_size: u32,
-    style: u32,
-    lpfn_wnd_proc: unsafe extern "system" fn(HWND, u32, usize, isize) -> isize,
-    cb_cls_extra: i32,
-    cb_wnd_extra: i32,
-    h_instance: *mut std::ffi::c_void,
-    h_icon: *mut std::ffi::c_void,
-    h_cursor: *mut std::ffi::c_void,
-    hbr_background: *mut std::ffi::c_void,
-    lpsz_menu_name: *const u16,
-    lpsz_class_name: *const u16,
-    h_icon_sm: *mut std::ffi::c_void,
-}
+// ── Hotkey state ──────────────────────────────
 
-fn to_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
+static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
+static HOTKEY_VK: AtomicIsize = AtomicIsize::new(0);
+static HOTKEY_MODS: AtomicIsize = AtomicIsize::new(0);
+static HOTKEY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
+
+fn debug_log(s: &str) {
+    if cfg!(debug_assertions) {
+        crate::audio::debug_log(s);
+    }
 }
 
 /// Parse modifier string like "ctrl+alt" into modifier flags.
 pub fn parse_modifiers(s: &str) -> u32 {
+    let s = s.trim();
+    if s.is_empty() {
+        return 0;
+    }
     let mut flags = 0u32;
     for part in s.to_lowercase().split('+') {
         match part.trim() {
@@ -81,7 +73,7 @@ pub fn parse_modifiers(s: &str) -> u32 {
     if flags == 0 {
         flags = MOD_CONTROL | MOD_ALT;
     }
-    flags | MOD_NOREPEAT
+    flags
 }
 
 /// Convert a key name string to virtual key code.
@@ -100,148 +92,126 @@ pub fn parse_vk(s: &str) -> u32 {
         }
     }
     match s.to_uppercase().as_str() {
-        "F1" => 0x70,
-        "F2" => 0x71,
-        "F3" => 0x72,
-        "F4" => 0x73,
-        "F5" => 0x74,
-        "F6" => 0x75,
-        "F7" => 0x76,
-        "F8" => 0x77,
-        "F9" => 0x78,
-        "F10" => 0x79,
-        "F11" => 0x7A,
-        "F12" => 0x7B,
-        "SPACE" => 0x20,
-        "TAB" => 0x09,
+        "F1" => 0x70, "F2" => 0x71, "F3" => 0x72, "F4" => 0x73,
+        "F5" => 0x74, "F6" => 0x75, "F7" => 0x76, "F8" => 0x77,
+        "F9" => 0x78, "F10" => 0x79, "F11" => 0x7A, "F12" => 0x7B,
+        "SPACE" => 0x20, "TAB" => 0x09,
         "ENTER" | "RETURN" => 0x0D,
         "ESC" | "ESCAPE" => 0x1B,
         "BACKSPACE" | "BACK" => 0x08,
         "DELETE" | "DEL" => 0x2E,
-        "HOME" => 0x24,
-        "END" => 0x23,
-        "PAGEUP" | "PGUP" => 0x21,
-        "PAGEDOWN" | "PGDN" => 0x22,
-        "UP" => 0x26,
-        "DOWN" => 0x28,
-        "LEFT" => 0x25,
-        "RIGHT" => 0x27,
+        "HOME" => 0x24, "END" => 0x23,
+        "PAGEUP" | "PGUP" => 0x21, "PAGEDOWN" | "PGDN" => 0x22,
+        "UP" => 0x26, "DOWN" => 0x28, "LEFT" => 0x25, "RIGHT" => 0x27,
         _ => 'T' as u32,
     }
 }
 
-// ── Hidden hotkey window ───────────────────────
+// ── Low-level keyboard hook callback ──────────
 
-static HOTKEY_HWND: AtomicIsize = AtomicIsize::new(0);
-static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
-
-unsafe extern "system" fn hotkey_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: usize,
-    lparam: isize,
+unsafe extern "system" fn keyboard_hook_callback(
+    n_code: i32,
+    w_param: usize,
+    l_param: isize,
 ) -> isize {
-    if msg == WM_HOTKEY && wparam == HOTKEY_ID as usize {
-        let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
-        if !target.is_null() {
-            unsafe {
-                PostMessageW(target, WM_USER_HOTKEY, 0, 0);
+    if n_code < 0 {
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param) };
+    }
+
+    if w_param == WM_KEYDOWN as usize || w_param == WM_SYSKEYDOWN as usize {
+        let vk_code = unsafe { *(l_param as *const u32) } as i32;
+        let expected_vk = HOTKEY_VK.load(Ordering::Relaxed) as i32;
+        let expected_mods = HOTKEY_MODS.load(Ordering::Relaxed) as u32;
+
+        if vk_code == expected_vk {
+            // Check modifiers
+            let mut current_mods = 0u32;
+            if (unsafe { GetKeyState(0x10 /* VK_SHIFT */) } as u32 & 0x8000) != 0 {
+                current_mods |= MOD_SHIFT;
+            }
+            if (unsafe { GetKeyState(0x11 /* VK_CONTROL */) } as u32 & 0x8000) != 0 {
+                current_mods |= MOD_CONTROL;
+            }
+            // Alt: check both left and right Alt, and the LLKHF_ALTDOWN flag
+            let alt_down = (unsafe { GetKeyState(0x12 /* VK_MENU */) } as u32 & 0x8000) != 0;
+            if alt_down {
+                current_mods |= MOD_ALT;
+            }
+            // Win key: check both left and right Windows keys
+            let lwin = (unsafe { GetKeyState(0x5B /* VK_LWIN */) } as u32 & 0x8000) != 0;
+            let rwin = (unsafe { GetKeyState(0x5C /* VK_RWIN */) } as u32 & 0x8000) != 0;
+            if lwin || rwin {
+                current_mods |= MOD_WIN;
+            }
+
+            if current_mods == expected_mods {
+                let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
+                if !target.is_null() {
+                    debug_log("[hotkey] keyboard hook matched, posting WM_USER_HOTKEY\n");
+                    unsafe { PostMessageW(target, WM_USER_HOTKEY, 0, 0); }
+                }
+                // Don't block the key — let other apps see it too
             }
         }
-        return 0;
     }
-    if msg == WM_DESTROY {
-        unsafe {
-            UnregisterHotKey(hwnd, HOTKEY_ID);
-        }
-        return 0;
-    }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+
+    unsafe { CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param) }
 }
 
+// ── Public API ────────────────────────────────
+
+/// Install the low-level keyboard hook and configure the hotkey.
 pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), String> {
     TARGET_HWND.store(target_hwnd as isize, Ordering::Relaxed);
 
+    let mods = parse_modifiers(mod_str);
+    let vk = parse_vk(key_str);
+
+    debug_log(&format!(
+        "[hotkey] installing keyboard hook: mod=0x{mods:x}, vk=0x{vk:x}\n"
+    ));
+
+    HOTKEY_VK.store(vk as isize, Ordering::Relaxed);
+    HOTKEY_MODS.store(mods as isize, Ordering::Relaxed);
+
     let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-    if hinst.is_null() {
-        return Err("GetModuleHandleW failed".into());
-    }
-
-    let class_name = to_wide("TipClockHotkeyClass");
-    let wc = WNDCLASSEXW {
-        cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: 0,
-        lpfn_wnd_proc: hotkey_wndproc,
-        cb_cls_extra: 0,
-        cb_wnd_extra: 0,
-        h_instance: hinst,
-        h_icon: std::ptr::null_mut(),
-        h_cursor: std::ptr::null_mut(),
-        hbr_background: std::ptr::null_mut(),
-        lpsz_menu_name: std::ptr::null(),
-        lpsz_class_name: class_name.as_ptr(),
-        h_icon_sm: std::ptr::null_mut(),
-    };
-
-    let atom = unsafe { RegisterClassExW(&wc) };
-    if atom == 0 {
-        return Err("RegisterClassExW failed".into());
-    }
-
-    let hwnd = unsafe {
-        CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            std::ptr::null(),
-            0,
-            0,
-            0,
-            0,
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+    let hook = unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            keyboard_hook_callback,
             hinst,
-            std::ptr::null_mut(),
+            0, // global hook (0 = all threads)
         )
     };
 
-    if hwnd.is_null() {
-        return Err("CreateWindowExW failed".into());
+    if hook.is_null() {
+        return Err("SetWindowsHookExW failed".into());
     }
 
-    HOTKEY_HWND.store(hwnd as isize, Ordering::Relaxed);
-
-    let mods = parse_modifiers(mod_str);
-    let vk = parse_vk(key_str);
-    let result = unsafe { RegisterHotKey(hwnd, HOTKEY_ID, mods, vk) };
-    if result == 0 {
-        return Err(format!("RegisterHotKey failed (mod={mods:#x}, vk={vk:#x})"));
-    }
+    HOOK_HANDLE.store(hook as isize, Ordering::Relaxed);
+    HOTKEY_ACTIVE.store(true, Ordering::Relaxed);
+    debug_log("[hotkey] keyboard hook installed successfully\n");
 
     Ok(())
 }
 
-/// Re-register with new modifiers/key (after config reload).
+/// Update hotkey configuration at runtime.
 #[allow(dead_code)]
 pub fn update(mod_str: &str, key_str: &str) {
-    let hwnd = HOTKEY_HWND.load(Ordering::Relaxed) as HWND;
-    if hwnd.is_null() {
-        return;
-    }
-    unsafe {
-        UnregisterHotKey(hwnd, HOTKEY_ID);
-        let mods = parse_modifiers(mod_str);
-        let vk = parse_vk(key_str);
-        RegisterHotKey(hwnd, HOTKEY_ID, mods, vk);
-    }
+    let mods = parse_modifiers(mod_str);
+    let vk = parse_vk(key_str);
+    HOTKEY_VK.store(vk as isize, Ordering::Relaxed);
+    HOTKEY_MODS.store(mods as isize, Ordering::Relaxed);
+    debug_log(&format!("[hotkey] updated: vk=0x{vk:x}, mods=0x{mods:x}\n"));
 }
 
+/// Remove the hook.
 #[allow(dead_code)]
 pub fn destroy() {
-    let hwnd = HOTKEY_HWND.load(Ordering::Relaxed) as HWND;
-    if !hwnd.is_null() {
-        unsafe {
-            DestroyWindow(hwnd);
-        }
+    let hook = HOOK_HANDLE.load(Ordering::Relaxed) as HHOOK;
+    if !hook.is_null() {
+        unsafe { UnhookWindowsHookEx(hook); }
+        HOOK_HANDLE.store(0, Ordering::Relaxed);
+        HOTKEY_ACTIVE.store(false, Ordering::Relaxed);
     }
 }

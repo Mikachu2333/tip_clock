@@ -135,7 +135,7 @@ const CONFIG_TEMPLATE_ZH: &str = r#"# ──────────────
 #  提示音类型: start, end, special, custom, none
 #    custom = 播放同目录下的 wav 文件
 #    none   = 不播放音频
-#  修改后自动生效 (无需重启)
+#  修改后需重启程序生效
 #  使用 # 开头的行是注释, 不会被读取
 # ──────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ const CONFIG_TEMPLATE_EN: &str = r#"# ──────────────
 #  Ring types: start, end, special, custom, none
 #    custom = play a .wav file from the same folder
 #    none   = no sound
-#  Changes take effect automatically (no restart)
+#  Changes require a program restart to take effect
 #  Lines starting with # are comments
 # ──────────────────────────────────────────────
 

@@ -138,7 +138,7 @@ impl AudioPlayer {
 }
 
 // ───────────────────────────────────────────────
-//  Helpers (same as original)
+//  UTF-16 conversion + debug output helpers
 // ───────────────────────────────────────────────
 
 pub(crate) fn to_wide(s: &str) -> Vec<u16> {

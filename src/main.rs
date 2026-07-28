@@ -175,6 +175,12 @@ fn try_attach_console() {
     }
 }
 
+fn debug_log(s: &str) {
+    if DEBUG_MODE {
+        audio::debug_log(s);
+    }
+}
+
 fn fatal(msg: &str) -> ! {
     let text = audio::to_wide(msg);
     let caption = audio::to_wide("Tip Clock — Fatal Error");
@@ -297,6 +303,13 @@ fn pump_messages() {
             if msg.message == WM_QUIT {
                 std::process::exit(0);
             }
+            if msg.message != 0x0113 {
+                // Log every dispatched message with hwnd and message code
+                debug_log(&format!(
+                    "[main] pump: hwnd={:?} msg=0x{:04x}\n",
+                    msg.hwnd, msg.message
+                ));
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -304,7 +317,7 @@ fn pump_messages() {
 }
 
 // ───────────────────────────────────────────────
-//  Auto-start (registry)
+//  Auto-start — Windows registry Run key
 // ───────────────────────────────────────────────
 
 #[link(name = "advapi32")]
@@ -537,6 +550,12 @@ fn main() {
         &config.general.hotkey_key,
         gui_hwnd,
     )
+    .map(|()| {
+        debug_log(&format!(
+            "[main] hotkey registered: {}+{}\n",
+            config.general.hotkey_mod, config.general.hotkey_key
+        ));
+    })
     .unwrap_or_else(|e| {
         audio::debug_log(&format!("[tip_clock] hotkey init failed: {e}\n"));
     });
@@ -571,41 +590,53 @@ fn main() {
     let sep3 = PredefinedMenuItem::separator();
     let sep4 = PredefinedMenuItem::separator();
 
-    MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| match event.id.as_ref() {
-        "exit" => {
-            std::process::exit(0);
-        }
-        "skip_next" => {
-            SKIP_COUNT.get().unwrap().fetch_add(1, Ordering::Relaxed);
-            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
-        }
-        "toggle_pause" => {
-            PAUSED.get().unwrap().fetch_not(Ordering::Relaxed);
-            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
-        }
-        "show_clock" => {
-            if gui::is_visible() {
-                gui::hide_clock();
-            } else {
-                gui::show_clock();
+    MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| {
+        debug_log(&format!("[main] tray menu clicked: {:?}\n", event.id));
+        match event.id.as_ref() {
+            "exit" => {
+                debug_log("[main] tray menu: exit\n");
+                std::process::exit(0);
             }
-            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            "skip_next" => {
+                debug_log("[main] tray menu: skip next\n");
+                SKIP_COUNT.get().unwrap().fetch_add(1, Ordering::Relaxed);
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+            "toggle_pause" => {
+                debug_log("[main] tray menu: toggle pause\n");
+                PAUSED.get().unwrap().fetch_not(Ordering::Relaxed);
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+            "show_clock" => {
+                debug_log("[main] tray menu: show/hide clock\n");
+                if gui::is_visible() {
+                    gui::hide_clock();
+                } else {
+                    gui::show_clock();
+                }
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+            "edit_config" => {
+                debug_log("[main] tray menu: edit config\n");
+                let cfg = CONFIG.get().unwrap().lock().unwrap();
+                let path = cfg.config_path.clone();
+                drop(cfg);
+                let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
+            }
+            "font_settings" => {
+                debug_log("[main] tray menu: font settings\n");
+                dialog_choose_font();
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+            "text_color" => {
+                debug_log("[main] tray menu: text color\n");
+                dialog_choose_color();
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+            _ => {
+                debug_log(&format!("[main] tray menu: unknown id '{:?}'\n", event.id));
+            }
         }
-        "edit_config" => {
-            let cfg = CONFIG.get().unwrap().lock().unwrap();
-            let path = cfg.config_path.clone();
-            drop(cfg);
-            let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
-        }
-        "font_settings" => {
-            dialog_choose_font();
-            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
-        }
-        "text_color" => {
-            dialog_choose_color();
-            NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
-        }
-        _ => {}
     })));
 
     let menu = Menu::new();
@@ -631,10 +662,11 @@ fn main() {
         .with_menu(Box::new(menu))
         .build()
         .unwrap_or_else(|e| fatal(&format!("Tray icon: {e}")));
+    debug_log("[main] tray icon created\n");
 
     // Left click → toggle clock; right click → show menu.
-    // By default, tray-icon shows menu on both clicks. Disable left-click menu.
     tray.set_show_menu_on_left_click(false);
+    debug_log("[main] tray: left-click menu disabled, right-click menu enabled\n");
 
     // TrayIconEvent for left-click toggle. Only matching Left button ensures
     // right-click still triggers the context menu via the default handling.
@@ -645,6 +677,7 @@ fn main() {
                 ..
             } = event
             {
+                debug_log("[main] tray left-click: toggle clock\n");
                 if gui::is_visible() {
                     gui::hide_clock();
                 } else {
@@ -663,11 +696,19 @@ fn main() {
     // Initial menu refresh
     refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
 
+    debug_log("[main] entering main loop\n");
+    let mut loop_count: u64 = 0;
+
     loop {
+        loop_count += 1;
+        if loop_count % 120 == 1 {
+            // Heartbeat roughly every 60 seconds (120 iterations × 500ms)
+            debug_log(&format!("[main] heartbeat: iteration {loop_count}\n"));
+        }
         pump_messages();
 
-        // Handle hotkey (WM_HOTKEY is dispatched to the GUI window, but we
-        // also check here for robustness)
+        // WM_USER_HOTKEY is posted by the keyboard hook in hotkey.rs
+        // and dispatched to the clock window via pump_messages above.
         let now = Local::now();
         let current = (now.hour(), now.minute(), now.second());
 
@@ -682,42 +723,56 @@ fn main() {
             last_played_second = Some(current);
 
             let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
-            let cfg = CONFIG.get().unwrap().lock().unwrap();
 
-            // Determine if we should skip the next match
-            let do_skip = if paused {
-                true
-            } else {
-                let matches = cfg.entries_at(current.0, current.1, current.2);
-                if !matches.is_empty() {
-                    let count = SKIP_COUNT.get().unwrap();
-                    let prev = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                        if v > 0 { Some(v - 1) } else { None }
-                    });
-                    prev.is_ok()
+            // Scope the config lock so it's released before refresh_menu_items (avoids deadlock)
+            let matches_found = {
+                let cfg = CONFIG.get().unwrap().lock().unwrap();
+
+                // Determine if we should skip the next match
+                let do_skip = if paused {
+                    true
+                } else {
+                    let matches = cfg.entries_at(current.0, current.1, current.2);
+                    if !matches.is_empty() {
+                        let count = SKIP_COUNT.get().unwrap();
+                        let prev = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                            if v > 0 { Some(v - 1) } else { None }
+                        });
+                        prev.is_ok()
+                    } else {
+                        false
+                    }
+                };
+
+                if !do_skip {
+                    let entries = cfg.entries_at(current.0, current.1, current.2);
+                    for entry in entries {
+                        if entry.ring != RingType::None {
+                            debug_log(&format!(
+                                "[main] schedule match at {:02}:{:02}:{:02}, ring={:?}\n",
+                                current.0, current.1, current.2, entry.ring
+                            ));
+                            AUDIO.get().unwrap().play(
+                                entry.ring,
+                                entry.custom_file.as_deref(),
+                                &cfg.exe_dir,
+                            );
+                            gui::show_clock();
+                        }
+                    }
+                    true
                 } else {
                     false
                 }
-            };
+            }; // cfg lock released here
 
-            if !do_skip {
-                let entries = cfg.entries_at(current.0, current.1, current.2);
-                for entry in entries {
-                    if entry.ring != RingType::None {
-                        AUDIO.get().unwrap().play(
-                            entry.ring,
-                            entry.custom_file.as_deref(),
-                            &cfg.exe_dir,
-                        );
-                        // Show the clock window when a reminder triggers
-                        gui::show_clock();
-                    }
-                }
-            }
-
-            // Refresh menu after minute change
+            // Refresh menu after minute change (lock-free now)
             refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
             last_menu_refresh = std::time::Instant::now();
+
+            if matches_found {
+                debug_log("[main] schedule match processed\n");
+            }
         }
 
         // Periodic menu refresh (every INTERVAL_SECS)

@@ -43,15 +43,10 @@ const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_SHOWWINDOW: u32 = 0x0040;
 const SW_HIDE: i32 = 0;
 
-const AW_HOR_POSITIVE: u32 = 0x0000_0001;
-const AW_HOR_NEGATIVE: u32 = 0x0000_0002;
-const AW_SLIDE: u32 = 0x0004_0000;
-const AW_HIDE: u32 = 0x0001_0000;
-
 const TRANSPARENT: i32 = 1;
 
 const WM_HOTKEY: u32 = 0x0312;
-const WM_USER_HOTKEY: u32 = 0x0401; // custom: posted by hotkey window
+const WM_USER_HOTKEY: u32 = 0x0401; // custom: posted by keyboard hook in hotkey.rs
 const WM_NULL: u32 = 0x0000;
 const WM_TIMER: u32 = 0x0113;
 const WM_LBUTTONDOWN: u32 = 0x0201;
@@ -180,7 +175,6 @@ unsafe extern "system" {
         uFlags: u32,
     ) -> i32;
     fn GetSystemMetrics(nIndex: i32) -> i32;
-    fn AnimateWindow(hWnd: HWND, dwTime: u32, dwFlags: u32) -> i32;
     fn SetTimer(
         hWnd: HWND,
         nIDEvent: usize,
@@ -274,6 +268,12 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+fn debug_log(s: &str) {
+    if cfg!(debug_assertions) {
+        crate::audio::debug_log(s);
+    }
+}
+
 // ───────────────────────────────────────────────
 //  Clock window state
 // ───────────────────────────────────────────────
@@ -295,7 +295,6 @@ struct GuiState {
     shown_at: Option<std::time::Instant>,
     width: i32,
     height: i32,
-    slide_left: bool,
     // Bitmap resources
     mem_dc: RawPtr,
     bitmap: RawPtr,
@@ -321,9 +320,12 @@ unsafe extern "system" fn clock_wndproc(
 ) -> LRESULT {
     match msg {
         WM_HOTKEY | WM_USER_HOTKEY => {
+            debug_log("[gui] WM_HOTKEY / WM_USER_HOTKEY received\n");
             if is_visible() {
+                debug_log("[gui] hiding clock\n");
                 hide_clock();
             } else {
+                debug_log("[gui] showing clock\n");
                 show_clock();
             }
             return 0;
@@ -402,6 +404,7 @@ unsafe extern "system" fn clock_wndproc(
 
 /// Show a right-click popup menu on the clock window.
 unsafe fn show_clock_context_menu(hwnd: HWND, _lparam: LPARAM) {
+    debug_log("[gui] right-click context menu shown\n");
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
@@ -554,17 +557,13 @@ unsafe fn hide_clock_internal(state: &mut GuiState) {
         KillTimer(hwnd, state.timer_update_id);
         state.shown_at = None;
         GUI_VISIBLE.store(false, Ordering::Relaxed);
-
-        if state.slide_left {
-            AnimateWindow(hwnd, 400, AW_HIDE | AW_SLIDE | AW_HOR_NEGATIVE);
-        } else {
-            AnimateWindow(hwnd, 400, AW_HIDE | AW_SLIDE | AW_HOR_POSITIVE);
-        }
+        debug_log("[gui] clock hidden\n");
         ShowWindow(hwnd, SW_HIDE);
     }
 }
 
 pub fn hide_clock() {
+    debug_log("[gui] hide_clock() called\n");
     if let Some(state_lock) = GUI_STATE.get() {
         let mut state_opt = state_lock.lock().unwrap();
         if let Some(ref mut state) = *state_opt {
@@ -576,6 +575,7 @@ pub fn hide_clock() {
 }
 
 pub fn show_clock() {
+    debug_log("[gui] show_clock() called\n");
     if let Some(state_lock) = GUI_STATE.get() {
         let mut state_opt = state_lock.lock().unwrap();
         if let Some(ref mut state) = *state_opt {
@@ -601,48 +601,30 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
         let x = (sw - state.width) / 2;
         let y = sh / 6;
 
-        state.slide_left = x < sw / 2;
-
-        // Hide and position off-screen as animation start point
-        ShowWindow(hwnd, SW_HIDE);
-
-        let start_x = if state.slide_left { -(state.width) } else { sw };
-
-        SetWindowPos(
-            hwnd,
-            (-1isize) as HWND,
-            start_x,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE,
-        );
-
-        // Render the current time onto the bitmap
+        // Render the current time before showing
         let now = Local::now();
         state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
         redraw_layered_window(state);
 
-        // Animate in (this also shows the window)
-        if state.slide_left {
-            AnimateWindow(hwnd, 600, AW_SLIDE | AW_HOR_POSITIVE);
-        } else {
-            AnimateWindow(hwnd, 600, AW_SLIDE | AW_HOR_NEGATIVE);
-        }
-
-        // Ensure final position and topmost
+        // Show at final position (no slide animation — AnimateWindow is incompatible
+        // with WS_EX_LAYERED. A manual slide would require a timer-driven position
+        // loop, which adds complexity for marginal UX gain.)
         SetWindowPos(
             hwnd,
-            (-1isize) as HWND,
+            (-1isize) as HWND, // HWND_TOPMOST
             x,
             y,
             0,
             0,
-            SWP_NOSIZE | SWP_NOACTIVATE,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
 
         GUI_VISIBLE.store(true, Ordering::Relaxed);
         state.shown_at = Some(std::time::Instant::now());
+        debug_log(&format!(
+            "[gui] clock shown at ({x}, {y}) size=({},{})\n",
+            state.width, state.height
+        ));
 
         KillTimer(hwnd, state.timer_update_id);
         SetTimer(hwnd, state.timer_update_id, 500, std::ptr::null_mut());
@@ -820,7 +802,6 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         shown_at: None,
         width: win_w,
         height: win_h,
-        slide_left: true,
         mem_dc: RawPtr::from_ptr(mem_dc),
         bitmap: RawPtr::from_ptr(bitmap),
         bitmap_bits: RawPtr::from_ptr(bitmap_bits),
