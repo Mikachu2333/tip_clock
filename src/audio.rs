@@ -102,9 +102,10 @@ impl AudioPlayer {
         let full_path = exe_dir.join(&corrected);
         if !full_path.exists() {
             debug_log(format!(
-                "[tip_clock] custom audio file not found: {}\n",
+                "[tip_clock] custom audio file not found: {}\nUse embedded SPECIAL as a fallback sound.",
                 full_path.display()
             ));
+            self.play(RingType::Special, None, exe_dir);
             return;
         }
 
