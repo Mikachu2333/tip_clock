@@ -1,6 +1,6 @@
 [package]
 name = "tip_clock"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2024"
 
 [profile.release]
@@ -15,3 +15,4 @@ toml = "1.1.2"
 serde = { version = "1.0.228", features = ["derive"] }
 tray-icon = "0.24.1"
 single-instance = "0.3.3"
+win_msgbox_timeout = "1.2.1"

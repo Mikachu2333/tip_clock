@@ -154,6 +154,7 @@ const WM_COMMAND: u32 = 0x0111;
 const WM_DESTROY: u32 = 0x0002;
 const WM_CLOSE: u32 = 0x0010;
 const WM_SETCURSOR: u32 = 0x0020;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;
 const HTCAPTION: isize = 2;
 
@@ -434,8 +435,8 @@ const PAD_Y: i32 = 6;
 const ANIM_TIMER_ID: usize = 2;
 const ANIM_INTERVAL_MS: u32 = 16;
 const SLIDE_IN_MS: u32 = 1000;
-const SLIDE_OUT_MS: u32 = 3000;
-const SLIDE_DISTANCE: i32 = 100;
+const SLIDE_OUT_MS: u32 = 2000;
+const SLIDE_DISTANCE: i32 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnimKind {
@@ -446,8 +447,9 @@ enum AnimKind {
 struct Animation {
     kind: AnimKind,
     start: std::time::Instant,
-    start_y: i32,
-    end_y: i32,
+    start_x: i32,
+    end_x: i32,
+    y: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +482,7 @@ struct GuiState {
 static GUI_STATE: OnceLock<Mutex<Option<GuiState>>> = OnceLock::new();
 static GUI_VISIBLE: AtomicBool = AtomicBool::new(false);
 static GUI_HWND_STATIC: AtomicI32 = AtomicI32::new(0);
+static POSITION_CALLBACK: OnceLock<Box<dyn Fn(i32, i32) + Send + Sync>> = OnceLock::new();
 
 // ───────────────────────────────────────────────
 //  Window procedure
@@ -542,11 +545,21 @@ unsafe extern "system" fn clock_wndproc(
         }
 
         WM_LBUTTONDOWN => {
+            if let Some(state_lock) = GUI_STATE.get() {
+                let state_opt = state_lock.lock().unwrap();
+                if let Some(ref state) = *state_opt
+                    && state.animation.is_some()
+                {
+                    // Ignore drag during animation.
+                    return 0;
+                }
+            }
             unsafe {
                 let mut pt = POINT { x: 0, y: 0 };
                 GetCursorPos(&mut pt);
                 ReleaseCapture();
-                let lparam = ((pt.y as u32) << 16) as isize | ((pt.x as u32) & 0xFFFF) as isize;
+                let lparam =
+                    ((pt.y as u32) << 16) as isize | ((pt.x as u32) & 0xFFFF) as isize;
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, lparam);
             }
             if let Some(state_lock) = GUI_STATE.get() {
@@ -587,6 +600,21 @@ unsafe extern "system" fn clock_wndproc(
                 }
             }
             return 1;
+        }
+
+        WM_EXITSIZEMOVE => {
+            // Window finished moving — notify callback with new position
+            if let Some(cb) = POSITION_CALLBACK.get()
+                && let Some(state_lock) = GUI_STATE.get()
+            {
+                let state_opt = state_lock.lock().unwrap();
+                if let Some(ref state) = *state_opt {
+                    let mut rect = unsafe { std::mem::zeroed::<RECT>() };
+                    unsafe { GetWindowRect(state.hwnd.as_hwnd(), &mut rect); }
+                    cb(rect.left, rect.top);
+                }
+            }
+            return 0;
         }
 
         _ => {}
@@ -641,37 +669,43 @@ unsafe fn show_clock_context_menu(hwnd: HWND) {
 // ───────────────────────────────────────────────
 
 unsafe fn process_animation_frame(state: &mut GuiState) {
-    let Some(ref anim) = state.animation else {
-        return;
-    };
-    let (duration_ms, fade_dir) = match anim.kind {
-        AnimKind::Enter => (SLIDE_IN_MS, 1.0f32),
-        AnimKind::Exit => (SLIDE_OUT_MS, -1.0f32),
-    };
-    let elapsed_ms = anim.start.elapsed().as_millis() as u32;
-    let t = (elapsed_ms as f32 / duration_ms as f32).min(1.0);
-    let e = ease_out_cubic(t);
-    let kind = anim.kind;
-    let cur_y = anim.start_y + ((anim.end_y - anim.start_y) as f32 * e) as i32;
-    let alpha = if fade_dir > 0.0 {
-        (255.0 * e) as u8
-    } else {
-        (255.0 * (1.0 - e)) as u8
+    // Extract animation state first, releasing the immutable borrow before mutable ops.
+    let (kind, cur_x, anim_y, t, alpha) = {
+        let Some(ref anim) = state.animation else {
+            return;
+        };
+        let duration_ms = match anim.kind {
+            AnimKind::Enter => SLIDE_IN_MS,
+            AnimKind::Exit => SLIDE_OUT_MS,
+        };
+        let elapsed_ms = anim.start.elapsed().as_millis() as u32;
+        let t = (elapsed_ms as f32 / duration_ms as f32).min(1.0);
+        let e = ease_out_cubic(t);
+        let kind = anim.kind;
+        let cur_x = anim.start_x + ((anim.end_x - anim.start_x) as f32 * e) as i32;
+        let anim_y = anim.y;
+        let alpha: u8 = match kind {
+            AnimKind::Enter => (255.0 * e) as u8,
+            AnimKind::Exit => (255.0 * (1.0 - e)) as u8,
+        };
+        (kind, cur_x, anim_y, t, alpha)
     };
 
     let hwnd = state.hwnd.as_hwnd();
-    let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) };
 
     // Update time and redraw with current alpha.
     let now = Local::now();
-    state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    let new_time = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    if new_time != state.last_time_str {
+        state.last_time_str = new_time;
+    }
     unsafe {
         redraw_layered_window_with_alpha(state, alpha);
         SetWindowPos(
             hwnd,
             (-1isize) as HWND,
-            (sw - state.width) / 2,
-            cur_y,
+            cur_x,
+            anim_y,
             state.width,
             state.height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
@@ -813,15 +847,18 @@ unsafe fn hide_clock_internal(state: &mut GuiState) {
 
         KillTimer(hwnd, state.timer_update_id);
 
+        // Read current window position (real-time, not from initial placement)
         let mut rect = std::mem::zeroed::<RECT>();
         GetWindowRect(hwnd, &mut rect);
+        let cur_x = rect.left;
         let cur_y = rect.top;
 
         state.animation = Some(Animation {
             kind: AnimKind::Exit,
             start: std::time::Instant::now(),
-            start_y: cur_y,
-            end_y: cur_y - SLIDE_DISTANCE - state.height,
+            start_x: cur_x,
+            end_x: cur_x - SLIDE_DISTANCE,
+            y: cur_y,
         });
         SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut());
     }
@@ -864,8 +901,12 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
             return;
         }
 
-        let sh = GetSystemMetrics(SM_CYSCREEN);
-        let target_y = sh / 6;
+        // Read current window position (valid even when hidden).
+        // This ensures the slide-in starts from the last-dragged position.
+        let mut rect = std::mem::zeroed::<RECT>();
+        GetWindowRect(hwnd, &mut rect);
+        let cur_x = rect.left;
+        let cur_y = rect.top;
 
         let now = Local::now();
         state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
@@ -873,8 +914,9 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
         state.animation = Some(Animation {
             kind: AnimKind::Enter,
             start: std::time::Instant::now(),
-            start_y: target_y - SLIDE_DISTANCE,
-            end_y: target_y,
+            start_x: cur_x - SLIDE_DISTANCE,
+            end_x: cur_x,
+            y: cur_y,
         });
         KillTimer(hwnd, state.timer_update_id);
         SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut());
@@ -1062,12 +1104,14 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         }
 
         if max_x >= min_x && max_y >= min_y {
-            text_w = max_x - min_x + 1;
+            // Add extra width to avoid clipping antialiased glyph edges
+            const WIDTH_PAD: i32 = 10;
+            text_w = max_x - min_x + 1 + WIDTH_PAD;
             text_h = max_y - min_y + 1;
         } else {
-            // Fallback — reasonable estimate
-            text_w = 124;
-            text_h = 28;
+            // Fallback — target window size 180×64 with PAD_X=6, PAD_Y=6
+            text_w = 168;
+            text_h = 52;
         }
 
         // Use GDI+ font height as floor — pixel scan may miss antialiased edges.
@@ -1085,8 +1129,9 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             GdipDeleteGraphics(mg);
         }
     } else {
-        text_w = 124;
-        text_h = 28;
+        // Fallback — target window size 180×64 with PAD_X=6, PAD_Y=6
+        text_w = 168;
+        text_h = 52;
     }
 
     unsafe {
@@ -1103,6 +1148,28 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         ReleaseDC(std::ptr::null_mut(), screen_dc);
     }
 
+    // ── Determine initial window position ──────
+
+    let (screen_w, screen_h) = unsafe {
+        (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
+    };
+
+    let (init_x, init_y) = if cfg.window_x == -1 || cfg.window_y == -1 {
+        // Auto-position: centered horizontally, 1/6 from top
+        ((screen_w - win_w) / 2, screen_h / 6)
+    } else {
+        // Validate saved position against current screen bounds.
+        // If the screen resolution changed (e.g. laptop undocked),
+        // reset to 0,0 as requested.
+        let sx = cfg.window_x;
+        let sy = cfg.window_y;
+        if sx < 0 || sx > screen_w || sy < 0 || sy > screen_h {
+            (0, 0)
+        } else {
+            (sx, sy)
+        }
+    };
+
     // ── Create the layered window ──────────────
 
     let hwnd = unsafe {
@@ -1111,8 +1178,8 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             class_name.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
-            0,
-            0,
+            init_x,
+            init_y,
             win_w,
             win_h,
             std::ptr::null_mut(),
@@ -1195,6 +1262,27 @@ pub fn get_hwnd() -> HWND {
 
 pub fn is_visible() -> bool {
     GUI_VISIBLE.load(Ordering::Relaxed)
+}
+
+/// Register a callback to be invoked when the user finishes dragging the window.
+/// The callback receives the new (x, y) position of the top-left corner.
+pub fn set_position_callback<F: Fn(i32, i32) + Send + Sync + 'static>(f: F) {
+    POSITION_CALLBACK.set(Box::new(f)).ok();
+}
+
+/// Get the current window position (top-left corner).
+/// Returns None if the window has not been created yet.
+#[allow(dead_code)]
+pub fn get_window_position() -> Option<(i32, i32)> {
+    if let Some(state_lock) = GUI_STATE.get() {
+        let state_opt = state_lock.lock().unwrap();
+        if let Some(ref state) = *state_opt {
+            let mut rect = unsafe { std::mem::zeroed::<RECT>() };
+            unsafe { GetWindowRect(state.hwnd.as_hwnd(), &mut rect); }
+            return Some((rect.left, rect.top));
+        }
+    }
+    None
 }
 
 pub fn update_config(cfg: &GeneralConfig) {

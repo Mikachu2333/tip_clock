@@ -1130,13 +1130,14 @@ dependencies = [
 
 [[package]]
 name = "tip_clock"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
  "single-instance",
  "toml 1.1.2+spec-1.1.0",
  "tray-icon",
+ "win_msgbox_timeout",
 ]
 
 [[package]]
@@ -1324,6 +1325,12 @@ name = "widestring"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c168940144dd21fd8046987c16a46a33d5fc84eec29ef9dcddc2ac9e31526b7c"
+
+[[package]]
+name = "win_msgbox_timeout"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3031854e4e702576fad36bef99462f2e474bf022b663a4a28fe3fd8e6bcfac73"
 
 [[package]]
 name = "winapi"

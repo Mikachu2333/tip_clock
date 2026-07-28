@@ -27,8 +27,6 @@ const PROCESS_GUID: &str = "F44E29E669346E0CC3105EA440E85C00";
 //  Win32 constants & types
 // ───────────────────────────────────────────────
 
-const MB_OK: u32 = 0x0000_0000;
-const MB_ICONERROR: u32 = 0x0000_0010;
 const INTERVAL_SECS: u32 = 15;
 const PM_REMOVE: u32 = 1;
 const QS_ALLINPUT: u32 = 0x04FF;
@@ -78,8 +76,6 @@ struct MSG {
 
 #[link(name = "user32")]
 unsafe extern "system" {
-    fn MessageBoxW(hwnd: HWND, text: *const u16, caption: *const u16, utype: u32) -> i32;
-
     fn PeekMessageW(
         msg: *mut MSG,
         hwnd: HWND,
@@ -134,16 +130,7 @@ fn debug_log(s: impl ToString) {
 }
 
 fn fatal(msg: &str) -> ! {
-    let text = audio::to_wide(msg);
-    let caption = audio::to_wide("Tip Clock — Fatal Error");
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            caption.as_ptr(),
-            MB_OK | MB_ICONERROR,
-        );
-    }
+    win_msgbox_timeout::error_msgbox(msg, "Tip Clock — Fatal Error", 0);
     std::process::exit(1);
 }
 
@@ -451,6 +438,17 @@ fn main() {
     SKIP_COUNT.set(AtomicU32::new(0)).ok();
     PAUSED.set(AtomicBool::new(false)).ok();
     NEED_REFRESH.set(AtomicBool::new(false)).ok();
+
+    // Register callback to persist window position on drag
+    gui::set_position_callback(|x, y| {
+        if let Some(cfg_lock) = CONFIG.get()
+            && let Ok(mut cfg) = cfg_lock.lock()
+        {
+            cfg.general.window_x = x;
+            cfg.general.window_y = y;
+            let _ = cfg.save_to_file();
+        }
+    });
 
     // ── Build tray menu ────────────────────────
 

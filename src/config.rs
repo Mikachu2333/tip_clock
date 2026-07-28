@@ -58,6 +58,8 @@ pub struct GeneralConfig {
     pub volume: u8,         // 0-100
     pub hotkey_mod: String, // e.g., "ctrl+alt"
     pub hotkey_key: String, // e.g., "T"
+    pub window_x: i32,      // -1 = auto, otherwise pixel position
+    pub window_y: i32,      // -1 = auto, otherwise pixel position
 }
 
 impl Default for GeneralConfig {
@@ -75,6 +77,8 @@ impl Default for GeneralConfig {
             volume: 80,
             hotkey_mod: "Win+Alt".into(),
             hotkey_key: "B".into(),
+            window_x: -1,
+            window_y: -1,
         }
     }
 }
@@ -87,6 +91,23 @@ impl GeneralConfig {
         self.bg_opacity = self.bg_opacity.min(100);
         self.display_time = self.display_time.clamp(1, 60);
         self.volume = self.volume.min(100);
+        // Validate window position — reset to 0,0 if out of screen bounds
+        self.clamp_window_position();
+    }
+
+    /// Reset window position to 0,0 if it exceeds screen bounds.
+    /// Keeps -1 (auto) as-is.
+    pub fn clamp_window_position(&mut self) {
+        if self.window_x == -1 && self.window_y == -1 {
+            return;
+        }
+        // Sanity-check: negative values (other than -1) or absurdly large values
+        // indicate a corrupted config — reset to 0,0.
+        // Screen-bound validation happens at window creation time in gui.rs.
+        if self.window_x < -1 || self.window_x > 16384 || self.window_y < -1 || self.window_y > 16384 {
+            self.window_x = 0;
+            self.window_y = 0;
+        }
     }
 }
 
@@ -159,6 +180,10 @@ volume = {volume}
 hotkey_mod = "{hotkey_mod}"
 hotkey_key = "{hotkey_key}"
 
+# 窗口显示位置 (左上角像素坐标, -1 表示自动定位)
+window_x = {window_x}
+window_y = {window_y}
+
 [[schedule]]
 # 提醒时间与提示音
 time = "08:00:00"
@@ -210,6 +235,10 @@ volume = {volume}
 # Modifiers: alt, ctrl, shift, win (use + to combine)
 hotkey_mod = "{hotkey_mod}"
 hotkey_key = "{hotkey_key}"
+
+# Window position (pixel coordinates of top-left corner, -1 = auto)
+window_x = {window_x}
+window_y = {window_y}
 
 [[schedule]]
 # Reminder time and ring
@@ -289,7 +318,9 @@ impl Config {
                 .replace("{display_time}", &default.display_time.to_string())
                 .replace("{volume}", &default.volume.to_string())
                 .replace("{hotkey_mod}", &default.hotkey_mod)
-                .replace("{hotkey_key}", &default.hotkey_key);
+                .replace("{hotkey_key}", &default.hotkey_key)
+                .replace("{window_x}", &default.window_x.to_string())
+                .replace("{window_y}", &default.window_y.to_string());
             std::fs::write(&config_path, content)
                 .map_err(|e| format!("Failed to create config file: {e}"))?;
 
@@ -558,7 +589,9 @@ impl Config {
             .replace("{display_time}", &self.general.display_time.to_string())
             .replace("{volume}", &self.general.volume.to_string())
             .replace("{hotkey_mod}", &self.general.hotkey_mod)
-            .replace("{hotkey_key}", &self.general.hotkey_key);
+            .replace("{hotkey_key}", &self.general.hotkey_key)
+            .replace("{window_x}", &self.general.window_x.to_string())
+            .replace("{window_y}", &self.general.window_y.to_string());
 
         // Note: schedule entries use template defaults; user's custom schedule entries
         // are not preserved by this simple template approach. For full preservation,
