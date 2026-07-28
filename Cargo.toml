@@ -1,6 +1,6 @@
 [package]
 name = "tip_clock"
-version = "1.3.2"
+version = "1.3.3"
 edition = "2024"
 description = "Tip Clock - Desktop Reminder"
 authors = ["Mikachu2333"]
@@ -14,11 +14,12 @@ panic = "abort"
 
 [dependencies]
 chrono = "0.4.45"
-toml = "1.1.2"
-serde = { version = "1.0.228", features = ["derive"] }
-tray-icon = "0.24.1"
+toml = "1.1.3"
+serde = { version = "1.0.229", features = ["derive"] }
+tray-icon = "0.24.2"
 single-instance = "0.3.3"
 win_msgbox_timeout = "1.2.1"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
 
 [build-dependencies]
 winresource = "0.1.31"
