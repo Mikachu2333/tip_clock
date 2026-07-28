@@ -114,7 +114,7 @@ impl AudioPlayer {
         let full_path = exe_dir.join(&corrected);
         if !full_path.exists() {
             debug_log(&format!(
-                "[tip_clock] 自定义音频文件不存在: {}\n",
+                "[tip_clock] custom audio file not found: {}\n",
                 full_path.display()
             ));
             return;
@@ -145,8 +145,11 @@ pub(crate) fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-pub(crate) fn debug_log(s: &str) {
-    let wide = to_wide(s);
+pub(crate) fn debug_log(s: impl ToString) {
+    if cfg!(not(debug_assertions)) {
+        return;
+    }
+    let wide = to_wide(&s.to_string());
     unsafe {
         OutputDebugStringW(wide.as_ptr());
         let handle = GetStdHandle(STD_OUTPUT_HANDLE);

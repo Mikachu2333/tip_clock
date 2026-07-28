@@ -1,79 +1,110 @@
 # Tip Clock
 
-A Windows system-tray tool that displays a transparent floating clock and plays
-reminder sounds on a configurable schedule.
+A lightweight, always-on-top clock overlay for Windows with scheduled reminders and configurable appearance.
 
-## Features
+轻量级 Windows 时钟悬浮窗，支持定时提醒和自定义外观。
 
-- **Transparent clock overlay** — semi-transparent background, fully opaque text,
-  auto-hides after a configurable timeout.
-- **Tray icon** — left-click toggles the clock, right-click opens menu.
-- **Global hotkey** — `SetWindowsHookEx` based, supports Win-key combinations.
-  Default `Ctrl+Alt+T`, configurable.
-- **Font & color** — choose via system dialogs from the tray menu (Font… / Text Color…).
-  Settings persisted to `config.toml`.
-- **Scheduled reminders** — play WAV sounds at specific times.
-  Built-in: start / end / special. Custom WAV files in the EXE directory.
-- **i18n** — auto-detects system language (English / 中文).
-- **Auto-start** — optional registry entry.
-- **Single instance** — prevents multiple copies from running.
+## Features / 功能
 
-## Quick start
+- Transparent clock overlay with configurable background color, text color, and opacity
+- Scheduled audio reminders with custom WAV support
+- Global hotkey to show/hide the clock (default: `Win+Alt+B`)
+- System tray with quick-access menu
+- Single-instance (no duplicate processes)
+- DPI-aware rendering (GDI+)
 
-1. Place `tip_clock.exe` anywhere and run it.
-2. A `config.toml` is created automatically.
-3. Edit `config.toml` to customize times, sounds, colors, hotkey.
-4. **Restart the program** to apply changes (no hot-reload).
+---
 
-## Building from source
+- 可配置背景颜色、文字颜色和透明度的时钟悬浮窗
+- 定时音频提醒，支持自定义 WAV 文件
+- 全局快捷键显示/隐藏时钟（默认：`Win+Alt+B`）
+- 系统托盘图标和右键菜单
+- 单实例运行
+- DPI 感知渲染（GDI+）
+
+## Installation / 安装
+
+Download `tip_clock.exe` from the [Releases](https://github.com/your/repo/releases) page and place it in any folder. Run it — a `config.toml` will be created on first launch.
+
+从 [Releases](https://github.com/your/repo/releases) 下载 `tip_clock.exe`，放置到任意文件夹后运行。首次启动会自动创建 `config.toml`。
+
+### Build from source / 从源码编译
 
 ```bash
-# Rust 1.85+ (edition 2024)
+# Requires Rust 1.85+ (edition 2024)
+git clone https://github.com/your/repo.git
+cd tip_clock
 cargo build --release
-# Binary: target/release/tip_clock.exe  (~5.5 MB)
 ```
 
-## Configuration
+## Configuration / 配置
+
+Edit `config.toml` (in the same folder as the EXE) and restart the program.
+
+编辑 EXE 同目录下的 `config.toml` 后重启程序。
 
 ```toml
 [general]
-auto_start = false
-bg_opacity = 80          # background opacity 0–100
-display_time = 5          # auto-hide after N seconds
-volume = 80               # 0–100
-hotkey_mod = "ctrl+alt"   # empty = single key (F1–F12 only)
-hotkey_key = "T"
-font_name = "微软雅黑"     # managed via tray menu
-font_size = 16
+auto_start = false       # launch on Windows startup / 开机自启
+
+bg_r = 0                 # background RGB (0-255)
+bg_g = 0
+bg_b = 0
+bg_opacity = 100         # background opacity (0-100)
+
+text_r = 255             # text RGB (0-255)
+text_g = 255
+text_b = 255
+
+display_time = 5         # auto-hide after N seconds (1-60)
+volume = 80              # default volume (0-100)
+
+hotkey_mod = "Win+Alt"   # modifiers: alt, ctrl, shift, win
+hotkey_key = "B"         # key: A-Z, 0-9, F1-F12, Space, etc.
 
 [[schedule]]
 time = "08:00:00"
-ring = "start"            # start | end | special | custom | none
+ring = "start"           # start / end / special / custom / none
+
+[[schedule]]
+time = "08:45:00"
+ring = "end"
+
+[[schedule]]
+time = "09:40:00"
+ring = "special"
 ```
 
-Time values auto-correct: `9:00` → `09:00:00`, `930` → `09:30:00`.
+### Ring types / 提示音类型
 
-### Hotkey modifier format
+| Type | Behavior |
+|------|----------|
+| `start` | Embedded start.wav |
+| `end` | Embedded end.wav |
+| `special` | Embedded special.wav |
+| `custom` | Plays `<custom_file>.wav` from EXE folder |
+| `none` | No sound |
 
-| Value | Meaning |
-|-------|---------|
-| `""` (empty) | Single key (F1–F12 only) |
-| `"ctrl+alt"` | Ctrl + Alt |
-| `"win+shift"` | Win + Shift |
-| `"ctrl+shift+alt"` | Three modifiers |
+## Tray menu / 托盘菜单
 
-## Debugging
+- **Show Clock** — toggle the clock overlay
+- **Skip next** — skip the upcoming reminder
+- **Pause / Resume** — pause or resume all reminders
+- **Edit Config** — open config.toml in Notepad
+- **Text Color...** — change the clock text color
+- **Background Color...** — change the clock background color
+- **Exit** — quit the program
 
-Debug build (`cargo build`) enables console output with tagged logs:
+---
 
-```
-[main] entering main loop
-[hotkey] keyboard hook matched, posting WM_USER_HOTKEY
-[gui] WM_HOTKEY / WM_USER_HOTKEY received
-[main] schedule match at 09:40:00, ring=Special
-[main] tray menu clicked: MenuId("show_clock")
-```
+- **显示时钟** — 切换时钟悬浮窗
+- **跳过下次** — 跳过下一次提醒
+- **暂停 / 继续** — 暂停或恢复所有提醒
+- **编辑配置** — 用记事本打开 config.toml
+- **文字颜色...** — 更改时钟文字颜色
+- **背景颜色...** — 更改时钟背景颜色
+- **退出** — 退出程序
 
-## License
+## License / 许可
 
 MIT

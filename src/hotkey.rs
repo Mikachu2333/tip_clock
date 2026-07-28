@@ -47,10 +47,8 @@ static HOTKEY_MODS: AtomicIsize = AtomicIsize::new(0);
 static HOTKEY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
 
-fn debug_log(s: &str) {
-    if cfg!(debug_assertions) {
-        crate::audio::debug_log(s);
-    }
+fn debug_log(s: impl ToString) {
+    crate::audio::debug_log(s);
 }
 
 /// Parse modifier string like "ctrl+alt" into modifier flags.

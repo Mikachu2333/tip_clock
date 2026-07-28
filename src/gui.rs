@@ -374,10 +374,8 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn debug_log(s: &str) {
-    if cfg!(debug_assertions) {
-        crate::audio::debug_log(s);
-    }
+fn debug_log(s: impl ToString) {
+    crate::audio::debug_log(s);
 }
 
 fn get_system_dpi() -> f32 {
@@ -783,7 +781,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
     if hinst.is_null() {
-        return Err("获取模块句柄失败".into());
+        return Err("GetModuleHandleW returned NULL".into());
     }
 
     let class_name = to_wide("TipClockWindowClass");
@@ -806,20 +804,17 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     let atom = unsafe { RegisterClassExW(&wc) };
     if atom == 0 {
-        return Err("注册窗口类失败".into());
+        return Err("RegisterClassExW failed".into());
     }
-
-    // ── Measure text extent for window size ─────
 
     let system_dpi = get_system_dpi();
     let scaled_font_size = FONT_SIZE_PT * (system_dpi / 96.0);
 
-    // Create a temporary GDI+ Graphics from a screen DC for measurement.
     let screen_dc = unsafe { GetDC(std::ptr::null_mut()) };
     let mut tmp_graphics: GpGraphics = std::ptr::null_mut();
     if unsafe { GdipCreateFromHDC(screen_dc, &mut tmp_graphics) } != GDI_PLUS_OK {
         unsafe { ReleaseDC(std::ptr::null_mut(), screen_dc) };
-        return Err("GDI+ 测量图形创建失败".into());
+        return Err("GDI+ Graphics creation failed".into());
     }
 
     // Create the font for measurement
@@ -829,7 +824,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         GdipCreateFontFamilyFromName(font_wide.as_ptr(), std::ptr::null_mut(), &mut gp_family)
     } != GDI_PLUS_OK
     {
-        return Err("GDI+ 字体系列创建失败".into());
+        return Err("GDI+ font family creation failed".into());
     }
 
     let mut gp_font: GpFont = std::ptr::null_mut();
@@ -844,17 +839,16 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
     } != GDI_PLUS_OK
     {
         unsafe { GdipDeleteFontFamily(gp_family) };
-        return Err("GDI+ 字体创建失败".into());
+        return Err("GDI+ font creation failed".into());
     }
 
-    // Create string format (centered horizontally & vertically)
     let mut gp_sf: GpStringFormat = std::ptr::null_mut();
     if unsafe { GdipCreateStringFormat(0, 0, &mut gp_sf) } != GDI_PLUS_OK {
         unsafe {
             GdipDeleteFont(gp_font);
             GdipDeleteFontFamily(gp_family);
         }
-        return Err("GDI+ 字符串格式创建失败".into());
+        return Err("GDI+ string format creation failed".into());
     }
     unsafe {
         GdipSetStringFormatAlign(gp_sf, STRING_ALIGN_CENTER);
@@ -1019,7 +1013,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
     };
 
     if hwnd.is_null() {
-        return Err("创建窗口失败".into());
+        return Err("CreateWindowExW failed".into());
     }
 
     // ── DIB section for UpdateLayeredWindow ─────

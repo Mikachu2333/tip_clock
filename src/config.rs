@@ -259,10 +259,11 @@ pub fn default_schedule() -> Vec<ScheduleEntry> {
 
 impl Config {
     pub fn load_or_create() -> Result<Self, String> {
-        let exe_path = std::env::current_exe().map_err(|e| format!("获取 EXE 路径失败: {e}"))?;
+        let exe_path =
+            std::env::current_exe().map_err(|e| format!("Failed to get EXE path: {e}"))?;
         let exe_dir = exe_path
             .parent()
-            .ok_or("无法获取 EXE 所在目录")?
+            .ok_or("Failed to get EXE directory")?
             .to_path_buf();
         let config_path = exe_dir.join("config.toml");
 
@@ -293,7 +294,8 @@ impl Config {
                 .replace("{volume}", &default.volume.to_string())
                 .replace("{hotkey_mod}", &default.hotkey_mod)
                 .replace("{hotkey_key}", &default.hotkey_key);
-            std::fs::write(&config_path, content).map_err(|e| format!("创建配置文件失败: {e}"))?;
+            std::fs::write(&config_path, content)
+                .map_err(|e| format!("Failed to create config file: {e}"))?;
 
             let schedule = default_schedule();
             let entries = Config::build_entries(&schedule, default.volume);
@@ -309,7 +311,8 @@ impl Config {
 
     /// Load config from file, merge with defaults for any missing keys
     fn load_and_merge(path: &PathBuf) -> Result<(ConfigFile, String), String> {
-        let raw = std::fs::read_to_string(path).map_err(|e| format!("读取配置文件失败: {e}"))?;
+        let raw =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read config: {e}"))?;
 
         // Normalize common CJK punctuation in the entire file
         let raw_cleaned = raw
@@ -328,7 +331,7 @@ impl Config {
 
         // Parse cleaned TOML text
         let cfg: ConfigFile =
-            toml::from_str(&raw_cleaned).map_err(|e| format!("解析配置文件失败: {e}"))?;
+            toml::from_str(&raw_cleaned).map_err(|e| format!("Failed to parse config: {e}"))?;
 
         // Validate schedule entries
         let mut valid_schedule: Vec<ScheduleEntry> = Vec::new();
@@ -342,7 +345,7 @@ impl Config {
                 let mut corrected = entry.clone();
                 if corrected.time != normalized {
                     crate::audio::debug_log(&format!(
-                        "[tip_clock] 自动纠错: '{}' → '{}'\n",
+                        "[tip_clock] auto-corrected: '{}' -> '{}'\n",
                         entry.time, normalized
                     ));
                 }
@@ -350,7 +353,10 @@ impl Config {
                 valid_schedule.push(corrected);
                 continue;
             }
-            crate::audio::debug_log(&format!("[tip_clock] 忽略无效时间: {}\n", entry.time));
+            crate::audio::debug_log(&format!(
+                "[tip_clock] ignored invalid time: {}\n",
+                entry.time
+            ));
         }
 
         let merged = ConfigFile {
@@ -572,7 +578,8 @@ impl Config {
         // Note: schedule entries use template defaults; user's custom schedule entries
         // are not preserved by this simple template approach. For full preservation,
         // the user should edit config.toml directly.
-        std::fs::write(&self.config_path, content).map_err(|e| format!("写入配置文件失败: {e}"))?;
+        std::fs::write(&self.config_path, content)
+            .map_err(|e| format!("Failed to write config: {e}"))?;
         Ok(())
     }
 }

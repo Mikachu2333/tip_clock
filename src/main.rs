@@ -21,7 +21,6 @@ use tray_icon::{
 use audio::AudioPlayer;
 use config::{Config, RingType};
 
-const DEBUG_MODE: bool = cfg!(debug_assertions);
 const PROCESS_GUID: &str = "F44E29E669346E0CC3105EA440E85C00";
 
 // ───────────────────────────────────────────────
@@ -130,10 +129,8 @@ fn try_attach_console() {
     }
 }
 
-fn debug_log(s: &str) {
-    if DEBUG_MODE {
-        audio::debug_log(s);
-    }
+fn debug_log(s: impl ToString) {
+    audio::debug_log(s);
 }
 
 fn fatal(msg: &str) -> ! {
@@ -448,9 +445,7 @@ fn main() {
 
     // Config
     let config = Config::load_or_create().unwrap_or_else(|e| fatal(&e));
-    if DEBUG_MODE {
-        dbg!(&config);
-    }
+    debug_log(format!("{:?}", config));
 
     // Apply auto-start setting
     update_auto_start(config.general.auto_start);
