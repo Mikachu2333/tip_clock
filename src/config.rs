@@ -73,7 +73,7 @@ impl Default for GeneralConfig {
             text_r: 0,
             text_g: 0,
             text_b: 0,
-            display_time: 5,
+            display_time: 3,
             volume: 80,
             hotkey_mod: "Win+Alt".into(),
             hotkey_key: "B".into(),
