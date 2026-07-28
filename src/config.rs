@@ -104,7 +104,11 @@ impl GeneralConfig {
         // Sanity-check: negative values (other than -1) or absurdly large values
         // indicate a corrupted config — reset to 0,0.
         // Screen-bound validation happens at window creation time in gui.rs.
-        if self.window_x < -1 || self.window_x > 16384 || self.window_y < -1 || self.window_y > 16384 {
+        if self.window_x < -1
+            || self.window_x > 16384
+            || self.window_y < -1
+            || self.window_y > 16384
+        {
             self.window_x = 0;
             self.window_y = 0;
         }
@@ -202,9 +206,10 @@ time = "10:00:00"
 ring = "none"
 
 [[schedule]]
-time = "10:45:00"
-# 自定义提示音, 需在同目录下放置 aaabbb.wav 文件，仅支持 wav
-ring = "aaabbb"
+# 自定义提示音示例, 需在同目录下放置 lunch.wav 文件，仅支持 wav
+time = "12:00:00"
+ring = "custom"
+custom_file = "lunch"
 "#;
 
 /// Template for auto-creating config with comments — English
@@ -267,9 +272,10 @@ time = "10:00:00"
 ring = "none"
 
 [[schedule]]
-time = "10:45:00"
-# custom ring, requires aaabbb.wav in the same folder (only wav supported)
-ring = "aaabbb"
+# custom ring example, requires lunch.wav in the same folder (only wav supported)
+time = "12:00:00"
+ring = "custom"
+custom_file = "lunch"
 "#;
 
 /// Select the appropriate config template based on system language

@@ -69,7 +69,7 @@ text_g = 0
 text_b = 0
 
 # 弹出后自动隐藏的秒数 (1-60)
-display_time = 5
+display_time = 3
 
 # 默认音量 (0-100)
 volume = 80

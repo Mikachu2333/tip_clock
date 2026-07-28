@@ -37,14 +37,14 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 
 ## Installation
 
-Download `tip_clock.exe` from the [Releases](https://github.com/Mikachu2333/AutoTipClock/releases) page, place it in any folder, and run it. A `config.toml` will be created on first launch.
+Download `tip_clock.exe` from the [Releases](https://github.com/Mikachu2333/tip_clock/releases) page, place it in any folder, and run it. A `config.toml` will be created on first launch.
 
 ### Build from source
 
 ```bash
 # Requires Rust 1.85+ (edition 2024)
-git clone https://github.com/Mikachu2333/AutoTipClock.git
-cd AutoTipClock
+git clone https://github.com/Mikachu2333/tip_clock.git --depth=1
+cd tip_clock
 cargo build --release
 ```
 
@@ -71,7 +71,7 @@ text_g = 0
 text_b = 0
 
 # Auto-hide after N seconds (1-60)
-display_time = 5
+display_time = 3
 
 # Default volume (0-100)
 volume = 80

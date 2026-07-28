@@ -29,8 +29,8 @@ src/
 res/
 ├── start.wav    — embedded via include_bytes!
 ├── end.wav
-└── special.wav
-config.toml      — generated on first run in EXE directory
+├── special.wav
+└── ico_raw      — 256×256 RGBA tray icon, embedded via include_bytes!
 ```
 
 ## Configuration (`config.toml`)
@@ -44,13 +44,15 @@ config.toml      — generated on first run in EXE directory
 | Section | Key | Type | Default |
 | --------- | ----- | ------ | --------- |
 | `[general]` | `auto_start` | bool | `false` |
-| | `bg_r` / `bg_g` / `bg_b` | u8 (0-255) | `0, 0, 0` |
-| | `bg_opacity` | u8 (0-100) | `100` |
-| | `text_r` / `text_g` / `text_b` | u8 (0-255) | `255, 255, 255` |
-| | `display_time` | u32 (1-60 s) | `5` |
+| | `bg_r` / `bg_g` / `bg_b` | u8 (0-255) | `255, 255, 255` |
+| | `bg_opacity` | u8 (0-100) | `0` |
+| | `text_r` / `text_g` / `text_b` | u8 (0-255) | `0, 0, 0` |
+| | `display_time` | u32 (1-60 s) | `3` |
 | | `volume` | u8 (0-100) | `80` |
 | | `hotkey_mod` | string | `"Win+Alt"` |
 | | `hotkey_key` | string | `"B"` |
+| | `window_x` | i32 | `-1` (auto) |
+| | `window_y` | i32 | `-1` (auto) |
 | `[[schedule]]` | `time` | `"HH:MM:SS"` | - |
 | | `ring` | `start`/`end`/`special`/`custom`/`none` | - |
 | | `custom_file` | string (optional) | - |
@@ -60,7 +62,7 @@ config.toml      — generated on first run in EXE directory
 - **Single-instance**: via `single_instance` crate (GUID).
 - **GUI rendering**: GDI+ (`gdiplus.dll`) renders directly to a 32-bit BGRA DIB with pre-multiplied alpha. `UpdateLayeredWindow` + `ULW_ALPHA` displays the result. No post-processing hacks; GDI+ handles alpha natively.
 - **Font**: hardcoded (18pt, DPI-scaled). No longer configurable via config or dialog.
-- **Window sizing**: text is rendered to a temporary bitmap at startup; pixel scan measures exact bounds. `GdipGetFontHeight` provides the floor for height.
+- **Window sizing**: text measured via `GdipMeasureString` at startup; floating bounds converted to integer pixels with small padding for antialiasing overhangs.
 - **DPI**: `PROCESS_PER_MONITOR_DPI_AWARE`. Font size and window dimensions scale with system DPI.
 - **Message loop**: `MsgWaitForMultipleObjects` (500ms timeout) + `PeekMessageW` / `DispatchMessageW`.
 - **Timer**: `WM_TIMER` every 500ms redraws time and checks auto-hide.
