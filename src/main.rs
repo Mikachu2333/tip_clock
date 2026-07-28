@@ -197,11 +197,7 @@ fn refresh_menu_items(
         pause_item.set_text(i18n::tr(i18n::TrKey::Pause));
     }
 
-    show_item.set_text(if gui::is_visible() {
-        i18n::tr(i18n::TrKey::HideClock)
-    } else {
-        i18n::tr(i18n::TrKey::ShowClock)
-    });
+    show_item.set_text(i18n::tr(i18n::TrKey::SHClock));
 }
 
 // ───────────────────────────────────────────────
@@ -349,7 +345,9 @@ fn dialog_choose_color(kind: ColorKind) {
                 cfg.general.bg_b = b;
             }
         }
-        let _ = cfg.save_to_file();
+        if let Err(e) = cfg.save_to_file() {
+            debug_log(format!("[main] failed to save config: {e}\n"));
+        }
         drop(cfg);
         gui::update_config(&CONFIG.get().unwrap().lock().unwrap().general);
     }
@@ -419,7 +417,9 @@ fn main() {
         {
             cfg.general.window_x = x;
             cfg.general.window_y = y;
-            let _ = cfg.save_to_file();
+            if let Err(e) = cfg.save_to_file() {
+                debug_log(format!("[main] failed to save position: {e}\n"));
+            }
         }
     });
 
@@ -429,18 +429,18 @@ fn main() {
             && let Ok(mut cfg) = cfg_lock.lock()
         {
             cfg.general.bg_opacity = opacity;
-            let _ = cfg.save_to_file();
+            if let Err(e) = cfg.save_to_file() {
+                debug_log(format!("[main] failed to save opacity: {e}\n"));
+            }
         }
     });
-
-    // ── Build tray menu ────────────────────────
 
     let next_item = MenuItem::new(
         next_label(&CONFIG.get().unwrap().lock().unwrap()),
         false,
         None,
     );
-    let show_item = MenuItem::with_id("show_clock", i18n::tr(i18n::TrKey::ShowClock), true, None);
+    let show_item = MenuItem::with_id("show_clock", i18n::tr(i18n::TrKey::SHClock), true, None);
     let skip_item = MenuItem::with_id("skip_next", i18n::tr(i18n::TrKey::SkipNext), true, None);
     let pause_item = MenuItem::with_id("toggle_pause", i18n::tr(i18n::TrKey::Pause), true, None);
     let edit_item = MenuItem::with_id("edit_config", i18n::tr(i18n::TrKey::EditConfig), true, None);
@@ -484,7 +484,9 @@ fn main() {
                 let cfg = CONFIG.get().unwrap().lock().unwrap();
                 let path = cfg.config_path.clone();
                 drop(cfg);
-                let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
+                if let Err(e) = std::process::Command::new("notepad.exe").arg(&path).spawn() {
+                    debug_log(format!("[main] failed to open notepad: {e}\n"));
+                }
             }
             "text_color" => {
                 debug_log("[main] tray menu: text color\n");
@@ -597,26 +599,24 @@ fn main() {
             // Scope the config lock so it's released before refresh_menu_items (avoids deadlock)
             let matches_found = {
                 let cfg = CONFIG.get().unwrap().lock().unwrap();
+                let entries = cfg.entries_at(current.0, current.1, current.2);
 
                 // Determine if we should skip the next match
                 let do_skip = if paused {
                     true
-                } else {
-                    let matches = cfg.entries_at(current.0, current.1, current.2);
-                    if !matches.is_empty() {
-                        let count = SKIP_COUNT.get().unwrap();
-                        let prev = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                } else if !entries.is_empty() {
+                    let count = SKIP_COUNT.get().unwrap();
+                    count
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                             if v > 0 { Some(v - 1) } else { None }
-                        });
-                        prev.is_ok()
-                    } else {
-                        false
-                    }
+                        })
+                        .is_ok()
+                } else {
+                    false
                 };
 
                 if !do_skip {
-                    let entries = cfg.entries_at(current.0, current.1, current.2);
-                    for entry in entries {
+                    for entry in &entries {
                         if entry.ring != RingType::None {
                             debug_log(format!(
                                 "[main] schedule match at {:02}:{:02}:{:02}, ring={:?}\n",

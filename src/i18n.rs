@@ -43,8 +43,7 @@ pub enum TrKey {
     AppName,
     NextReminder,
     NoMoreReminders,
-    ShowClock,
-    HideClock,
+    SHClock,
     SkipNext,
     Pause,
     Resume,
@@ -81,13 +80,9 @@ pub fn tr(key: TrKey) -> &'static str {
             Lang::En => "No more reminders today",
             Lang::Zh => "今日无更多提醒",
         },
-        TrKey::ShowClock => match lang {
-            Lang::En => "Show Clock",
-            Lang::Zh => "显示时钟",
-        },
-        TrKey::HideClock => match lang {
-            Lang::En => "Hide Clock",
-            Lang::Zh => "隐藏时钟",
+        TrKey::SHClock => match lang {
+            Lang::En => "Show/Hide Clock",
+            Lang::Zh => "显示/隐藏时钟",
         },
         TrKey::SkipNext => match lang {
             Lang::En => "Skip next",

@@ -38,6 +38,7 @@ unsafe extern "system" {
 static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
 static HOTKEY_VK: AtomicIsize = AtomicIsize::new(0);
 static HOTKEY_MODS: AtomicIsize = AtomicIsize::new(0);
+static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
 
 fn debug_log(s: impl ToString) {
     crate::audio::debug_log(s);
@@ -66,48 +67,48 @@ pub fn parse_modifiers(s: &str) -> u32 {
 }
 
 /// Convert a key name string to virtual key code.
-pub fn parse_vk(s: &str) -> u32 {
+pub fn parse_vk(s: &str) -> Result<u32, String> {
     let s = s.trim();
     if s.len() == 1 {
         let c = s.chars().next().unwrap();
         if c.is_ascii_uppercase() {
-            return c as u32;
+            return Ok(c as u32);
         }
         if c.is_ascii_lowercase() {
-            return c.to_ascii_uppercase() as u32;
+            return Ok(c.to_ascii_uppercase() as u32);
         }
         if c.is_ascii_digit() {
-            return c as u32;
+            return Ok(c as u32);
         }
     }
     match s.to_uppercase().as_str() {
-        "F1" => 0x70,
-        "F2" => 0x71,
-        "F3" => 0x72,
-        "F4" => 0x73,
-        "F5" => 0x74,
-        "F6" => 0x75,
-        "F7" => 0x76,
-        "F8" => 0x77,
-        "F9" => 0x78,
-        "F10" => 0x79,
-        "F11" => 0x7A,
-        "F12" => 0x7B,
-        "SPACE" => 0x20,
-        "TAB" => 0x09,
-        "ENTER" | "RETURN" => 0x0D,
-        "ESC" | "ESCAPE" => 0x1B,
-        "BACKSPACE" | "BACK" => 0x08,
-        "DELETE" | "DEL" => 0x2E,
-        "HOME" => 0x24,
-        "END" => 0x23,
-        "PAGEUP" | "PGUP" => 0x21,
-        "PAGEDOWN" | "PGDN" => 0x22,
-        "UP" => 0x26,
-        "DOWN" => 0x28,
-        "LEFT" => 0x25,
-        "RIGHT" => 0x27,
-        _ => 'T' as u32,
+        "F1" => Ok(0x70),
+        "F2" => Ok(0x71),
+        "F3" => Ok(0x72),
+        "F4" => Ok(0x73),
+        "F5" => Ok(0x74),
+        "F6" => Ok(0x75),
+        "F7" => Ok(0x76),
+        "F8" => Ok(0x77),
+        "F9" => Ok(0x78),
+        "F10" => Ok(0x79),
+        "F11" => Ok(0x7A),
+        "F12" => Ok(0x7B),
+        "SPACE" => Ok(0x20),
+        "TAB" => Ok(0x09),
+        "ENTER" | "RETURN" => Ok(0x0D),
+        "ESC" | "ESCAPE" => Ok(0x1B),
+        "BACKSPACE" | "BACK" => Ok(0x08),
+        "DELETE" | "DEL" => Ok(0x2E),
+        "HOME" => Ok(0x24),
+        "END" => Ok(0x23),
+        "PAGEUP" | "PGUP" => Ok(0x21),
+        "PAGEDOWN" | "PGDN" => Ok(0x22),
+        "UP" => Ok(0x26),
+        "DOWN" => Ok(0x28),
+        "LEFT" => Ok(0x25),
+        "RIGHT" => Ok(0x27),
+        _ => Err(format!("unknown key: '{s}'")),
     }
 }
 
@@ -174,8 +175,9 @@ unsafe extern "system" fn keyboard_hook_callback(
                 let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
                 if !target.is_null() {
                     debug_log("[hotkey] keyboard hook matched, posting WM_USER_HOTKEY\n");
-                    unsafe {
-                        PostMessageW(target, WM_USER_HOTKEY, 0, 0);
+                    let posted = unsafe { PostMessageW(target, WM_USER_HOTKEY, 0, 0) };
+                    if posted == 0 {
+                        debug_log("[hotkey] PostMessageW failed\n");
                     }
                 }
                 // Don't block the key — let other apps see it too
@@ -193,7 +195,7 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
     TARGET_HWND.store(target_hwnd as isize, Ordering::Relaxed);
 
     let mods = parse_modifiers(mod_str);
-    let vk = parse_vk(key_str);
+    let vk = parse_vk(key_str).map_err(|e| format!("invalid hotkey key: {e}"))?;
 
     debug_log(format!(
         "[hotkey] installing keyboard hook: mod=0x{mods:x}, vk=0x{vk:x}\n"
@@ -216,7 +218,75 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
         return Err("SetWindowsHookExW failed".into());
     }
 
+    HOOK_HANDLE.store(hook as isize, Ordering::Relaxed);
+
     debug_log("[hotkey] keyboard hook installed successfully\n");
 
     Ok(())
+}
+
+// ───────────────────────────────────────────────
+//  Unit tests
+// ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_vk_single_char() {
+        assert_eq!(parse_vk("A").unwrap(), 'A' as u32);
+        assert_eq!(parse_vk("b").unwrap(), 'B' as u32);
+        assert_eq!(parse_vk("5").unwrap(), '5' as u32);
+    }
+
+    #[test]
+    fn test_parse_vk_function_keys() {
+        assert_eq!(parse_vk("F1").unwrap(), 0x70);
+        assert_eq!(parse_vk("f12").unwrap(), 0x7B);
+        assert_eq!(parse_vk("F10").unwrap(), 0x79);
+    }
+
+    #[test]
+    fn test_parse_vk_special_keys() {
+        assert_eq!(parse_vk("SPACE").unwrap(), 0x20);
+        assert_eq!(parse_vk("enter").unwrap(), 0x0D);
+        assert_eq!(parse_vk("esc").unwrap(), 0x1B);
+        assert_eq!(parse_vk("DELETE").unwrap(), 0x2E);
+        assert_eq!(parse_vk("home").unwrap(), 0x24);
+        assert_eq!(parse_vk("UP").unwrap(), 0x26);
+    }
+
+    #[test]
+    fn test_parse_vk_unknown() {
+        assert!(parse_vk("F13").is_err());
+        assert!(parse_vk("abc").is_err());
+        assert!(parse_vk("unknown").is_err());
+    }
+
+    #[test]
+    fn test_parse_vk_whitespace() {
+        assert_eq!(parse_vk("  A  ").unwrap(), 'A' as u32);
+        assert_eq!(parse_vk("  F5  ").unwrap(), 0x74);
+    }
+
+    #[test]
+    fn test_parse_modifiers() {
+        assert_eq!(parse_modifiers("ctrl+alt"), MOD_CONTROL | MOD_ALT);
+        assert_eq!(parse_modifiers("Win+Alt"), MOD_WIN | MOD_ALT);
+        assert_eq!(parse_modifiers("shift"), MOD_SHIFT);
+        assert_eq!(parse_modifiers(""), 0);
+    }
+
+    #[test]
+    fn test_parse_modifiers_case_insensitive() {
+        assert_eq!(parse_modifiers("CTRL+ALT"), MOD_CONTROL | MOD_ALT);
+        assert_eq!(parse_modifiers("Win+Shift"), MOD_WIN | MOD_SHIFT);
+    }
+
+    #[test]
+    fn test_parse_modifiers_default() {
+        // Unknown modifiers default to Ctrl+Alt
+        assert_eq!(parse_modifiers("xyz"), MOD_CONTROL | MOD_ALT);
+    }
 }

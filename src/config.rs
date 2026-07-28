@@ -317,7 +317,7 @@ impl Config {
         let config_path = exe_dir.join("config.toml");
 
         if config_path.exists() {
-            let (mut cfg, _source) = Self::load_and_merge(&config_path)?;
+            let mut cfg = Self::load_and_merge(&config_path)?;
             cfg.general.clamp();
             let entries = Config::build_entries(&cfg.schedule);
             Ok(Config {
@@ -361,7 +361,7 @@ impl Config {
     }
 
     /// Load config from file, merge with defaults for any missing keys
-    fn load_and_merge(path: &PathBuf) -> Result<(ConfigFile, String), String> {
+    fn load_and_merge(path: &PathBuf) -> Result<ConfigFile, String> {
         let raw =
             std::fs::read_to_string(path).map_err(|e| format!("Failed to read config: {e}"))?;
 
@@ -410,16 +410,25 @@ impl Config {
             ));
         }
 
-        let merged = ConfigFile {
-            general: cfg.general,
-            schedule: if valid_schedule.is_empty() {
-                default_schedule()
-            } else {
-                valid_schedule
-            },
+        // If the user-provided schedule is entirely invalid, fall back to
+        // defaults rather than running with an empty list silently.
+        let final_schedule = if valid_schedule.is_empty() {
+            if !cfg.schedule.is_empty() {
+                crate::audio::debug_log(
+                    "[tip_clock] all schedule entries invalid, using defaults\n",
+                );
+            }
+            default_schedule()
+        } else {
+            valid_schedule
         };
 
-        Ok((merged, raw))
+        let merged = ConfigFile {
+            general: cfg.general,
+            schedule: final_schedule,
+        };
+
+        Ok(merged)
     }
 
     pub fn next_reminder(&self, current_h: u32, current_m: u32) -> Option<(u32, u32, RingType)> {
@@ -708,5 +717,86 @@ mod tests {
         assert_eq!(parse_hhmmss("9:30"), Some((9, 30, 0)));
         assert_eq!(parse_hhmmss("09:30:00"), Some((9, 30, 0)));
         assert_eq!(parse_hhmmss("9：30：00"), Some((9, 30, 0)));
+    }
+
+    #[test]
+    fn test_normalize_time_edge_cases() {
+        // Zero values
+        assert_eq!(normalize_time("0"), Some("00:00:00".into()));
+        assert_eq!(normalize_time("00:00"), Some("00:00:00".into()));
+        assert_eq!(normalize_time("0:0:0"), Some("00:00:00".into()));
+        // Max valid values
+        assert_eq!(normalize_time("23:59:59"), Some("23:59:59".into()));
+        // 24:00 boundary — invalid hour
+        assert_eq!(normalize_time("24:00"), None);
+    }
+
+    #[test]
+    fn test_entries_at_single() {
+        let entries = vec![
+            ScheduleEntry {
+                time: "09:00:00".into(),
+                ring: RingType::Start,
+                custom_file: None,
+            },
+            ScheduleEntry {
+                time: "12:00:00".into(),
+                ring: RingType::End,
+                custom_file: None,
+            },
+        ];
+        let parsed = Config::build_entries(&entries);
+        assert_eq!(parsed.len(), 2);
+        // Simulate entries_at logic
+        let at_9 = parsed
+            .iter()
+            .filter(|e| e.total_sec == 9 * 3600)
+            .collect::<Vec<_>>();
+        assert_eq!(at_9.len(), 1);
+        assert_eq!(at_9[0].ring, RingType::Start);
+        // No match
+        let at_10 = parsed
+            .iter()
+            .filter(|e| e.total_sec == 10 * 3600)
+            .collect::<Vec<_>>();
+        assert!(at_10.is_empty());
+    }
+
+    #[test]
+    fn test_entries_at_sorted() {
+        let entries = vec![
+            ScheduleEntry {
+                time: "14:00:00".into(),
+                ring: RingType::End,
+                custom_file: None,
+            },
+            ScheduleEntry {
+                time: "08:00:00".into(),
+                ring: RingType::Start,
+                custom_file: None,
+            },
+        ];
+        let parsed = Config::build_entries(&entries);
+        assert_eq!(parsed[0].hour, 8);
+        assert_eq!(parsed[1].hour, 14);
+    }
+
+    #[test]
+    fn test_entries_at_invalid_time_ignored() {
+        let entries = vec![
+            ScheduleEntry {
+                time: "08:00:00".into(),
+                ring: RingType::Start,
+                custom_file: None,
+            },
+            ScheduleEntry {
+                time: "25:00:00".into(),
+                ring: RingType::End,
+                custom_file: None,
+            },
+        ];
+        let parsed = Config::build_entries(&entries);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].hour, 8);
     }
 }

@@ -46,11 +46,14 @@ impl AudioPlayer {
     }
 
     fn set_wave_volume(vol: u8) {
-        // Convert 0-100 to 0-65535 (logarithmic scale is better but linear works)
+        // Convert 0-100 to 0-65535 (left + right channels)
         let v = ((vol as f32 / 100.0) * 65535.0) as u32;
-        let dw = v | (v << 16); // left + right channels
+        let dw = v | (v << 16);
         unsafe {
-            waveOutSetVolume(std::ptr::null_mut(), dw);
+            let result = waveOutSetVolume(std::ptr::null_mut(), dw);
+            if result != 0 {
+                debug_log(format!("[tip_clock] waveOutSetVolume failed: {result}\n"));
+            }
         }
     }
 
@@ -74,11 +77,14 @@ impl AudioPlayer {
                 };
                 if !data.is_empty() {
                     unsafe {
-                        PlaySoundW(
+                        let ok = PlaySoundW(
                             data.as_ptr() as *const u16,
                             std::ptr::null_mut(),
                             SND_MEMORY | SND_ASYNC,
                         );
+                        if ok == 0 {
+                            debug_log("[tip_clock] PlaySoundW (embedded) failed\n");
+                        }
                     }
                 }
             }
@@ -104,11 +110,17 @@ impl AudioPlayer {
 
         let wide = to_wide(&full_path.to_string_lossy());
         unsafe {
-            PlaySoundW(
+            let ok = PlaySoundW(
                 wide.as_ptr(),
                 std::ptr::null_mut(),
                 SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
             );
+            if ok == 0 {
+                debug_log(format!(
+                    "[tip_clock] PlaySoundW (custom) failed: {}\n",
+                    full_path.display()
+                ));
+            }
         }
     }
 }

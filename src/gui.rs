@@ -1275,23 +1275,6 @@ pub fn set_position_callback<F: Fn(i32, i32) + Send + Sync + 'static>(f: F) {
     POSITION_CALLBACK.set(Box::new(f)).ok();
 }
 
-/// Get the current window position (top-left corner).
-/// Returns None if the window has not been created yet.
-#[allow(dead_code)]
-pub fn get_window_position() -> Option<(i32, i32)> {
-    if let Some(state_lock) = GUI_STATE.get() {
-        let state_opt = state_lock.lock().unwrap();
-        if let Some(ref state) = *state_opt {
-            let mut rect = unsafe { std::mem::zeroed::<RECT>() };
-            unsafe {
-                GetWindowRect(state.hwnd.as_hwnd(), &mut rect);
-            }
-            return Some((rect.left, rect.top));
-        }
-    }
-    None
-}
-
 pub fn update_config(cfg: &GeneralConfig) {
     if let Some(state_lock) = GUI_STATE.get() {
         let mut state_opt = state_lock.lock().unwrap();
@@ -1668,6 +1651,7 @@ pub fn create_opacity_panel() -> Result<(), String> {
     // ── DPI-scaled font for the edit control ──
     let scaled_font_size = PANEL_FONT_SIZE_PT * scale;
     let font_height = -(scaled_font_size) as i32;
+    let font_face = to_wide(FONT_NAME);
     let ui_font = unsafe {
         CreateFontW(
             font_height,
@@ -1683,7 +1667,7 @@ pub fn create_opacity_panel() -> Result<(), String> {
             0,
             5,
             0,
-            to_wide(FONT_NAME).as_ptr(),
+            font_face.as_ptr(),
         )
     };
 
