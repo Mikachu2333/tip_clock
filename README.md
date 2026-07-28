@@ -66,9 +66,9 @@ auto_start = false
 
 # 背景颜色 RGB (0-255)，透明度 (0-100, 0=全透明)
 # Background color RGB (0-255), opacity (0-100, 0=fully transparent)
-bg_r = 0
-bg_g = 0
-bg_b = 0
+bg_r = 255
+bg_g = 255
+bg_b = 255
 bg_opacity = 0
 
 # 文字颜色 RGB (0-255)
