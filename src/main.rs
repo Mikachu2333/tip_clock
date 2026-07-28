@@ -404,8 +404,14 @@ fn main() {
         audio::debug_log(format!("[tip_clock] hotkey init failed: {e}\n"));
     });
 
-    CONFIG.set(std::sync::Mutex::new(config)).ok();
-    AUDIO.set(audio).ok();
+    CONFIG
+        .set(std::sync::Mutex::new(config))
+        .unwrap_or_else(|_| {
+            fatal("Failed to initialize CONFIG: already initialized");
+        });
+    AUDIO.set(audio).unwrap_or_else(|_| {
+        fatal("Failed to initialize AUDIO: already initialized");
+    });
     SKIP_COUNT.set(AtomicU32::new(0)).ok();
     PAUSED.set(AtomicBool::new(false)).ok();
     NEED_REFRESH.set(AtomicBool::new(false)).ok();

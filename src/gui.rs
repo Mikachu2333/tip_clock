@@ -1195,12 +1195,40 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
     };
 
     if hwnd.is_null() {
+        // Clean up previously allocated resources
+        unsafe {
+            if !gp_sf.is_null() {
+                GdipDeleteStringFormat(gp_sf);
+            }
+            if !gp_font.is_null() {
+                GdipDeleteFont(gp_font);
+            }
+            if !gp_family.is_null() {
+                GdipDeleteFontFamily(gp_family);
+            }
+        }
         return Err("CreateWindowExW failed".into());
     }
 
     // ── DIB section for UpdateLayeredWindow ─────
 
     let mem_dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+    if mem_dc.is_null() {
+        // Clean up previously allocated resources
+        unsafe {
+            DestroyWindow(hwnd);
+            if !gp_sf.is_null() {
+                GdipDeleteStringFormat(gp_sf);
+            }
+            if !gp_font.is_null() {
+                GdipDeleteFont(gp_font);
+            }
+            if !gp_family.is_null() {
+                GdipDeleteFontFamily(gp_family);
+            }
+        }
+        return Err("CreateCompatibleDC failed".into());
+    }
 
     let bmi = BITMAPINFOHEADER {
         bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -1227,6 +1255,23 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             0,
         )
     };
+    if bitmap.is_null() {
+        // Clean up previously allocated resources
+        unsafe {
+            DeleteDC(mem_dc);
+            DestroyWindow(hwnd);
+            if !gp_sf.is_null() {
+                GdipDeleteStringFormat(gp_sf);
+            }
+            if !gp_font.is_null() {
+                GdipDeleteFont(gp_font);
+            }
+            if !gp_family.is_null() {
+                GdipDeleteFontFamily(gp_family);
+            }
+        }
+        return Err("CreateDIBSection failed".into());
+    }
     unsafe {
         SelectObject(mem_dc, bitmap as HGDIOBJ);
     }
