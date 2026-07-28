@@ -38,6 +38,11 @@ type HWND = *mut std::ffi::c_void;
 //  ChooseFont / ChooseColor dialog structures
 // ───────────────────────────────────────────────
 
+enum ColorKind {
+    Text,
+    Bg,
+}
+
 #[allow(dead_code)]
 #[repr(C)]
 struct CHOOSECOLORW {
@@ -303,11 +308,13 @@ fn update_auto_start(enable: bool) {
 //  Font & color dialogs
 // ───────────────────────────────────────────────
 
-fn dialog_choose_color() {
+fn dialog_choose_color(kind: ColorKind) {
     let cfg = CONFIG.get().unwrap().lock().unwrap();
-    let rgb: u32 = (cfg.general.text_r as u32)
-        | ((cfg.general.text_g as u32) << 8)
-        | ((cfg.general.text_b as u32) << 16);
+    let (init_r, init_g, init_b) = match kind {
+        ColorKind::Text => (cfg.general.text_r, cfg.general.text_g, cfg.general.text_b),
+        ColorKind::Bg => (cfg.general.bg_r, cfg.general.bg_g, cfg.general.bg_b),
+    };
+    let rgb: u32 = (init_r as u32) | ((init_g as u32) << 8) | ((init_b as u32) << 16);
     drop(cfg);
 
     let mut cust_colors: [u32; 16] = [0; 16];
@@ -330,58 +337,22 @@ fn dialog_choose_color() {
         let b = ((cc.rgb_result >> 16) & 0xFF) as u8;
 
         let mut cfg = CONFIG.get().unwrap().lock().unwrap();
-        cfg.general.text_r = r;
-        cfg.general.text_g = g;
-        cfg.general.text_b = b;
+        match kind {
+            ColorKind::Text => {
+                cfg.general.text_r = r;
+                cfg.general.text_g = g;
+                cfg.general.text_b = b;
+            }
+            ColorKind::Bg => {
+                cfg.general.bg_r = r;
+                cfg.general.bg_g = g;
+                cfg.general.bg_b = b;
+            }
+        }
         let _ = cfg.save_to_file();
         drop(cfg);
         gui::update_config(&CONFIG.get().unwrap().lock().unwrap().general);
     }
-}
-
-fn dialog_choose_bg_color() {
-    let cfg = CONFIG.get().unwrap().lock().unwrap();
-    let rgb: u32 = (cfg.general.bg_r as u32)
-        | ((cfg.general.bg_g as u32) << 8)
-        | ((cfg.general.bg_b as u32) << 16);
-    drop(cfg);
-
-    let mut cust_colors: [u32; 16] = [0; 16];
-    let mut cc = CHOOSECOLORW {
-        l_struct_size: std::mem::size_of::<CHOOSECOLORW>() as u32,
-        hwnd_owner: std::ptr::null_mut(),
-        h_instance: std::ptr::null_mut(),
-        rgb_result: rgb,
-        lp_cust_colors: cust_colors.as_mut_ptr(),
-        flags: CC_RGBINIT | CC_FULLOPEN,
-        l_cust_data: 0,
-        lpfn_hook: std::ptr::null_mut(),
-        lp_template_name: std::ptr::null(),
-    };
-
-    let result = unsafe { ChooseColorW(&mut cc) };
-    if result != 0 {
-        let r = (cc.rgb_result & 0xFF) as u8;
-        let g = ((cc.rgb_result >> 8) & 0xFF) as u8;
-        let b = ((cc.rgb_result >> 16) & 0xFF) as u8;
-
-        let mut cfg = CONFIG.get().unwrap().lock().unwrap();
-        cfg.general.bg_r = r;
-        cfg.general.bg_g = g;
-        cfg.general.bg_b = b;
-        let _ = cfg.save_to_file();
-        drop(cfg);
-        gui::update_config(&CONFIG.get().unwrap().lock().unwrap().general);
-    }
-}
-
-/// Create a 16×16 solid-color tray icon from R, G, B values (0-255).
-fn make_tray_icon_rgba(r: u8, g: u8, b: u8) -> tray_icon::Icon {
-    let mut rgba = Vec::with_capacity(16 * 16 * 4);
-    for _ in 0..16 * 16 {
-        rgba.extend_from_slice(&[r, g, b, 255]);
-    }
-    tray_icon::Icon::from_rgba(rgba, 16, 16).expect("icon")
 }
 
 // ───────────────────────────────────────────────
@@ -395,7 +366,7 @@ fn main() {
     // Single instance
     let instance = SingleInstance::new(PROCESS_GUID).unwrap_or_else(|e| fatal(&e.to_string()));
     if !instance.is_single() {
-        std::process::exit(1);
+        std::process::exit(0);
     }
 
     // i18n
@@ -504,12 +475,12 @@ fn main() {
             }
             "text_color" => {
                 debug_log("[main] tray menu: text color\n");
-                dialog_choose_color();
+                dialog_choose_color(ColorKind::Text);
                 NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
             }
             "bg_color" => {
                 debug_log("[main] tray menu: background color\n");
-                dialog_choose_bg_color();
+                dialog_choose_color(ColorKind::Bg);
                 NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
             }
             _ => {
@@ -532,8 +503,10 @@ fn main() {
     menu.append(&sep4).ok();
     menu.append(&exit_item).ok();
 
-    // Create tray icon — solid color 16×16
-    let icon = make_tray_icon_rgba(61, 176, 87);
+    // Create tray icon from embedded 256×256 RGBA raw data
+    let icon_raw: &[u8] = include_bytes!("../res/ico_raw");
+    let icon =
+        tray_icon::Icon::from_rgba(icon_raw.to_vec(), 256, 256).expect("tray icon from raw RGBA");
 
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
@@ -644,10 +617,6 @@ fn main() {
                     false
                 }
             }; // cfg lock released here
-
-            // Refresh menu after minute change (lock-free now)
-            refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
-            last_menu_refresh = std::time::Instant::now();
 
             if matches_found {
                 debug_log("[main] schedule match processed\n");

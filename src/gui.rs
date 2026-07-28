@@ -143,6 +143,7 @@ const SM_CYSCREEN: i32 = 1;
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_SHOWWINDOW: u32 = 0x0040;
 const SW_HIDE: i32 = 0;
+const HWND_TOPMOST: isize = -1;
 
 const WM_HOTKEY: u32 = 0x0312;
 const WM_USER_HOTKEY: u32 = 0x0401;
@@ -514,11 +515,6 @@ unsafe extern "system" fn clock_wndproc(
                         unsafe {
                             process_animation_frame(state);
                         }
-                        if state.animation.is_none() && !GUI_VISIBLE.load(Ordering::Relaxed) {
-                            unsafe {
-                                KillTimer(hwnd, ANIM_TIMER_ID);
-                            }
-                        }
                     } else if timer_id == state.timer_update_id {
                         let now = Local::now();
                         let time_str =
@@ -558,8 +554,7 @@ unsafe extern "system" fn clock_wndproc(
                 let mut pt = POINT { x: 0, y: 0 };
                 GetCursorPos(&mut pt);
                 ReleaseCapture();
-                let lparam =
-                    ((pt.y as u32) << 16) as isize | ((pt.x as u32) & 0xFFFF) as isize;
+                let lparam = ((pt.y as u32) << 16) as isize | ((pt.x as u32) & 0xFFFF) as isize;
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, lparam);
             }
             if let Some(state_lock) = GUI_STATE.get() {
@@ -610,7 +605,9 @@ unsafe extern "system" fn clock_wndproc(
                 let state_opt = state_lock.lock().unwrap();
                 if let Some(ref state) = *state_opt {
                     let mut rect = unsafe { std::mem::zeroed::<RECT>() };
-                    unsafe { GetWindowRect(state.hwnd.as_hwnd(), &mut rect); }
+                    unsafe {
+                        GetWindowRect(state.hwnd.as_hwnd(), &mut rect);
+                    }
                     cb(rect.left, rect.top);
                 }
             }
@@ -670,7 +667,7 @@ unsafe fn show_clock_context_menu(hwnd: HWND) {
 
 unsafe fn process_animation_frame(state: &mut GuiState) {
     // Extract animation state first, releasing the immutable borrow before mutable ops.
-    let (kind, cur_x, anim_y, t, alpha) = {
+    let (kind, cur_x, anim_y, t, alpha, anchor_x) = {
         let Some(ref anim) = state.animation else {
             return;
         };
@@ -684,11 +681,15 @@ unsafe fn process_animation_frame(state: &mut GuiState) {
         let kind = anim.kind;
         let cur_x = anim.start_x + ((anim.end_x - anim.start_x) as f32 * e) as i32;
         let anim_y = anim.y;
+        let anchor_x = match kind {
+            AnimKind::Enter => anim.end_x, // slide-right target = visible position
+            AnimKind::Exit => anim.start_x, // slide-left origin = visible position
+        };
         let alpha: u8 = match kind {
             AnimKind::Enter => (255.0 * e) as u8,
             AnimKind::Exit => (255.0 * (1.0 - e)) as u8,
         };
-        (kind, cur_x, anim_y, t, alpha)
+        (kind, cur_x, anim_y, t, alpha, anchor_x)
     };
 
     let hwnd = state.hwnd.as_hwnd();
@@ -703,7 +704,7 @@ unsafe fn process_animation_frame(state: &mut GuiState) {
         redraw_layered_window_with_alpha(state, alpha);
         SetWindowPos(
             hwnd,
-            (-1isize) as HWND,
+            HWND_TOPMOST as HWND,
             cur_x,
             anim_y,
             state.width,
@@ -728,8 +729,18 @@ unsafe fn process_animation_frame(state: &mut GuiState) {
             if t >= 1.0 {
                 state.animation = None;
                 unsafe {
-                    KillTimer(hwnd, ANIM_TIMER_ID);
+                    // Hide first, then restore position so next show starts from anchor.
                     ShowWindow(hwnd, SW_HIDE);
+                    SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST as HWND,
+                        anchor_x,
+                        anim_y,
+                        state.width,
+                        state.height,
+                        SWP_NOACTIVATE,
+                    );
+                    KillTimer(hwnd, ANIM_TIMER_ID);
                 }
                 GUI_VISIBLE.store(false, Ordering::Relaxed);
                 state.shown_at = None;
@@ -833,8 +844,6 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
 // ───────────────────────
 //  Show / hide
 // ───────────────────────
-//  Show / hide
-// ───────────────────────
 
 unsafe fn hide_clock_internal(state: &mut GuiState) {
     unsafe {
@@ -860,7 +869,13 @@ unsafe fn hide_clock_internal(state: &mut GuiState) {
             end_x: cur_x - SLIDE_DISTANCE,
             y: cur_y,
         });
-        SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut());
+        if SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut()) == 0 {
+            debug_log("[gui] SetTimer(ANIM) failed, animation won't run\n");
+            state.animation = None;
+            ShowWindow(hwnd, SW_HIDE);
+            GUI_VISIBLE.store(false, Ordering::Relaxed);
+            state.shown_at = None;
+        }
     }
 }
 
@@ -919,7 +934,13 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
             y: cur_y,
         });
         KillTimer(hwnd, state.timer_update_id);
-        SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut());
+        if SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut()) == 0 {
+            debug_log("[gui] SetTimer(ANIM) failed, showing clock immediately\n");
+            state.animation = None;
+            GUI_VISIBLE.store(true, Ordering::Relaxed);
+            state.shown_at = Some(std::time::Instant::now());
+            SetTimer(hwnd, state.timer_update_id, 500, std::ptr::null_mut());
+        }
     }
 }
 
@@ -969,14 +990,29 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         return Err("GDI+ Graphics creation failed".into());
     }
 
-    // Create the font for measurement
+    // Helper to clean up screen DC on error paths
+    let cleanup_screen_dc = || unsafe { ReleaseDC(std::ptr::null_mut(), screen_dc) };
+
+    // Try preferred font first, fall back to system default on failure
     let mut gp_family: GpFontFamily = std::ptr::null_mut();
     let font_wide = to_wide(FONT_NAME);
     if unsafe {
         GdipCreateFontFamilyFromName(font_wide.as_ptr(), std::ptr::null_mut(), &mut gp_family)
     } != GDI_PLUS_OK
     {
-        return Err("GDI+ font family creation failed".into());
+        // Fallback: use generic sans-serif (pass empty string = system default)
+        let fallback_wide = to_wide("");
+        if unsafe {
+            GdipCreateFontFamilyFromName(
+                fallback_wide.as_ptr(),
+                std::ptr::null_mut(),
+                &mut gp_family,
+            )
+        } != GDI_PLUS_OK
+        {
+            cleanup_screen_dc();
+            return Err("GDI+ font family creation failed".into());
+        }
     }
 
     let mut gp_font: GpFont = std::ptr::null_mut();
@@ -990,7 +1026,11 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         )
     } != GDI_PLUS_OK
     {
-        unsafe { GdipDeleteFontFamily(gp_family) };
+        unsafe {
+            GdipDeleteFontFamily(gp_family);
+            GdipDeleteGraphics(tmp_graphics);
+        }
+        cleanup_screen_dc();
         return Err("GDI+ font creation failed".into());
     }
 
@@ -999,7 +1039,9 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         unsafe {
             GdipDeleteFont(gp_font);
             GdipDeleteFontFamily(gp_family);
+            GdipDeleteGraphics(tmp_graphics);
         }
+        cleanup_screen_dc();
         return Err("GDI+ string format creation failed".into());
     }
     unsafe {
@@ -1150,9 +1192,8 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     // ── Determine initial window position ──────
 
-    let (screen_w, screen_h) = unsafe {
-        (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
-    };
+    let (screen_w, screen_h) =
+        unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
 
     let (init_x, init_y) = if cfg.window_x == -1 || cfg.window_y == -1 {
         // Auto-position: centered horizontally, 1/6 from top
@@ -1278,7 +1319,9 @@ pub fn get_window_position() -> Option<(i32, i32)> {
         let state_opt = state_lock.lock().unwrap();
         if let Some(ref state) = *state_opt {
             let mut rect = unsafe { std::mem::zeroed::<RECT>() };
-            unsafe { GetWindowRect(state.hwnd.as_hwnd(), &mut rect); }
+            unsafe {
+                GetWindowRect(state.hwnd.as_hwnd(), &mut rect);
+            }
             return Some((rect.left, rect.top));
         }
     }

@@ -2,6 +2,7 @@
 name = "tip_clock"
 version = "0.2.0"
 edition = "2024"
+build = "build.rs"
 
 [profile.release]
 lto = true
@@ -16,3 +17,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 tray-icon = "0.24.1"
 single-instance = "0.3.3"
 win_msgbox_timeout = "1.2.1"
+
+[build-dependencies]
+embed-resource = "2"

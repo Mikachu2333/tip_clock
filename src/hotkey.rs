@@ -33,9 +33,6 @@ unsafe extern "system" {
     fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
 }
 
-#[link(name = "kernel32")]
-unsafe extern "system" {}
-
 // ── Hotkey state ──────────────────────────────
 
 static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);

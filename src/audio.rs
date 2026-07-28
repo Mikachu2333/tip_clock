@@ -125,7 +125,12 @@ pub(crate) fn debug_log(s: impl ToString) {
     if cfg!(not(debug_assertions)) {
         return;
     }
-    let wide = to_wide(&s.to_string());
+    let text = s.to_string();
+    if text.is_empty() {
+        return;
+    }
+    let wide = to_wide(&text);
+    let payload_len = wide.len().saturating_sub(1); // exclude null terminator
     unsafe {
         OutputDebugStringW(wide.as_ptr());
         let handle = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -134,7 +139,7 @@ pub(crate) fn debug_log(s: impl ToString) {
             WriteConsoleW(
                 handle,
                 wide.as_ptr(),
-                (wide.len() - 1) as u32,
+                payload_len as u32,
                 &mut written,
                 std::ptr::null_mut(),
             );
