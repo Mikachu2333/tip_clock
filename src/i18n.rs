@@ -51,8 +51,6 @@ pub enum TrKey {
     EditConfig,
     TextColor,
     BgColor,
-    #[allow(dead_code)]
-    VolumeLabel,
 }
 
 /// Lazy-initialized language
@@ -112,10 +110,6 @@ pub fn tr(key: TrKey) -> &'static str {
         TrKey::BgColor => match lang {
             Lang::En => "Background Color...",
             Lang::Zh => "背景颜色...",
-        },
-        TrKey::VolumeLabel => match lang {
-            Lang::En => "Volume",
-            Lang::Zh => "音量",
         },
     }
 }

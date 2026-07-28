@@ -14,8 +14,6 @@ const MOD_WIN: u32 = 0x0008;
 const WH_KEYBOARD_LL: i32 = 13;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_SYSKEYDOWN: u32 = 0x0104;
-#[allow(dead_code)]
-const LLKHF_ALTDOWN: u32 = 0x0020;
 
 /// Custom message posted to the main window when hotkey fires.
 pub const WM_USER_HOTKEY: u32 = 0x0401;
@@ -29,7 +27,6 @@ unsafe extern "system" {
         dwThreadId: u32,
     ) -> HHOOK;
 
-    fn UnhookWindowsHookEx(hhk: HHOOK) -> i32;
     fn CallNextHookEx(hhk: HHOOK, nCode: i32, wParam: usize, lParam: isize) -> isize;
     fn GetKeyState(nVirtKey: i32) -> i16;
     fn PostMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) -> i32;
@@ -203,7 +200,7 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
     let mods = parse_modifiers(mod_str);
     let vk = parse_vk(key_str);
 
-    debug_log(&format!(
+    debug_log(format!(
         "[hotkey] installing keyboard hook: mod=0x{mods:x}, vk=0x{vk:x}\n"
     ));
 
@@ -229,27 +226,4 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
     debug_log("[hotkey] keyboard hook installed successfully\n");
 
     Ok(())
-}
-
-/// Update hotkey configuration at runtime.
-#[allow(dead_code)]
-pub fn update(mod_str: &str, key_str: &str) {
-    let mods = parse_modifiers(mod_str);
-    let vk = parse_vk(key_str);
-    HOTKEY_VK.store(vk as isize, Ordering::Relaxed);
-    HOTKEY_MODS.store(mods as isize, Ordering::Relaxed);
-    debug_log(&format!("[hotkey] updated: vk=0x{vk:x}, mods=0x{mods:x}\n"));
-}
-
-/// Remove the hook.
-#[allow(dead_code)]
-pub fn destroy() {
-    let hook = HOOK_HANDLE.load(Ordering::Relaxed) as HHOOK;
-    if !hook.is_null() {
-        unsafe {
-            UnhookWindowsHookEx(hook);
-        }
-        HOOK_HANDLE.store(0, Ordering::Relaxed);
-        HOTKEY_ACTIVE.store(false, Ordering::Relaxed);
-    }
 }

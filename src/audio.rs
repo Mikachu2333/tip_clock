@@ -7,8 +7,6 @@ use crate::config::RingType;
 unsafe extern "system" {
     fn PlaySoundW(pszSound: *const u16, hmod: *mut std::ffi::c_void, fdwSound: u32) -> i32;
     fn waveOutSetVolume(hwo: *mut std::ffi::c_void, dwVolume: u32) -> u32;
-    #[allow(dead_code)]
-    fn waveOutGetVolume(hwo: *mut std::ffi::c_void, pdwVolume: *mut u32) -> u32;
 }
 
 #[link(name = "kernel32")]
@@ -29,8 +27,6 @@ const SND_ASYNC: u32 = 0x0001;
 const SND_FILENAME: u32 = 0x00020000;
 const SND_NODEFAULT: u32 = 0x0002;
 const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5u32;
-#[allow(dead_code)]
-const MMSYSERR_NOERROR: u32 = 0;
 
 // Embedded default WAVs
 const START_WAV: &[u8] = include_bytes!("../res/start.wav");
@@ -41,26 +37,12 @@ const SPECIAL_WAV: &[u8] = include_bytes!("../res/special.wav");
 //  Audio player
 // ───────────────────────────────────────────────
 
-pub struct AudioPlayer {
-    current_volume: std::sync::Mutex<u8>, // 0-100
-}
+pub struct AudioPlayer;
 
 impl AudioPlayer {
     pub fn new(default_volume: u8) -> Self {
-        let vol = default_volume.min(100);
-        // Set initial wave volume
-        Self::set_wave_volume(vol);
-        AudioPlayer {
-            current_volume: std::sync::Mutex::new(vol),
-        }
-    }
-
-    /// Set volume (0-100). Affects subsequent plays.
-    #[allow(dead_code)]
-    pub fn set_volume(&self, volume: u8) {
-        let vol = volume.min(100);
-        *self.current_volume.lock().unwrap() = vol;
-        Self::set_wave_volume(vol);
+        Self::set_wave_volume(default_volume.min(100));
+        AudioPlayer
     }
 
     fn set_wave_volume(vol: u8) {
@@ -113,7 +95,7 @@ impl AudioPlayer {
 
         let full_path = exe_dir.join(&corrected);
         if !full_path.exists() {
-            debug_log(&format!(
+            debug_log(format!(
                 "[tip_clock] custom audio file not found: {}\n",
                 full_path.display()
             ));
@@ -128,12 +110,6 @@ impl AudioPlayer {
                 SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
             );
         }
-    }
-
-    /// For volume display (0-100)
-    #[allow(dead_code)]
-    pub fn current_volume(&self) -> u8 {
-        *self.current_volume.lock().unwrap()
     }
 }
 

@@ -104,15 +104,11 @@ pub struct ConfigFile {
 
 #[derive(Debug, Clone)]
 pub struct ParsedEntry {
-    pub total_sec: u32, // seconds since midnight
+    pub total_sec: u32,
     pub hour: u32,
     pub minute: u32,
-    #[allow(dead_code)]
-    pub second: u32,
     pub ring: RingType,
     pub custom_file: Option<String>,
-    #[allow(dead_code)]
-    pub volume: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -270,7 +266,7 @@ impl Config {
         if config_path.exists() {
             let (mut cfg, _source) = Self::load_and_merge(&config_path)?;
             cfg.general.clamp();
-            let entries = Config::build_entries(&cfg.schedule, cfg.general.volume);
+            let entries = Config::build_entries(&cfg.schedule);
             Ok(Config {
                 general: cfg.general,
                 schedule: cfg.schedule,
@@ -298,7 +294,7 @@ impl Config {
                 .map_err(|e| format!("Failed to create config file: {e}"))?;
 
             let schedule = default_schedule();
-            let entries = Config::build_entries(&schedule, default.volume);
+            let entries = Config::build_entries(&schedule);
             Ok(Config {
                 general: default,
                 schedule,
@@ -344,7 +340,7 @@ impl Config {
             {
                 let mut corrected = entry.clone();
                 if corrected.time != normalized {
-                    crate::audio::debug_log(&format!(
+                    crate::audio::debug_log(format!(
                         "[tip_clock] auto-corrected: '{}' -> '{}'\n",
                         entry.time, normalized
                     ));
@@ -353,7 +349,7 @@ impl Config {
                 valid_schedule.push(corrected);
                 continue;
             }
-            crate::audio::debug_log(&format!(
+            crate::audio::debug_log(format!(
                 "[tip_clock] ignored invalid time: {}\n",
                 entry.time
             ));
@@ -383,7 +379,7 @@ impl Config {
         self.entries.first().map(|e| (e.hour, e.minute, e.ring))
     }
 
-    fn build_entries(schedule: &[ScheduleEntry], default_volume: u8) -> Vec<ParsedEntry> {
+    fn build_entries(schedule: &[ScheduleEntry]) -> Vec<ParsedEntry> {
         let mut entries: Vec<ParsedEntry> = schedule
             .iter()
             .filter_map(|entry| {
@@ -395,10 +391,8 @@ impl Config {
                     total_sec: h * 3600 + m * 60 + s,
                     hour: h,
                     minute: m,
-                    second: s,
                     ring: entry.ring,
                     custom_file: entry.custom_file.clone(),
-                    volume: default_volume,
                 })
             })
             .collect();
@@ -508,15 +502,6 @@ pub fn parse_hhmmss(s: &str) -> Option<(u32, u32, u32)> {
     // Delegate to normalize_time for auto-correction
     let normalized = normalize_time(s)?;
     parse_normalized(&normalized)
-}
-
-/// Parse "HH:MM" only (for tray tooltip)
-#[allow(dead_code)]
-pub fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
-    let mut parts = s.splitn(2, ':');
-    let h: u32 = parts.next()?.parse().ok()?;
-    let m: u32 = parts.next()?.parse().ok()?;
-    (h < 24 && m < 60).then_some((h, m))
 }
 
 /// Auto-wrap bare time values in quotes for TOML compatibility.

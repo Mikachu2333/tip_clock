@@ -177,35 +177,6 @@ fn next_label(cfg: &Config) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn next_after_skip_label(cfg: &Config) -> String {
-    let now = Local::now();
-    let count = SKIP_COUNT.get().unwrap().load(Ordering::Relaxed);
-
-    let mut h = now.hour();
-    let mut m = now.minute();
-
-    for i in 0..=count {
-        match cfg.next_reminder(h, m) {
-            Some((h2, m2, ring)) => {
-                h = h2;
-                m = m2;
-                if i == count {
-                    return format!(
-                        "{}  {:02}:{:02}  ({})",
-                        i18n::tr(i18n::TrKey::NextReminder),
-                        h,
-                        m,
-                        ring.display_name()
-                    );
-                }
-            }
-            None => return i18n::tr(i18n::TrKey::NoMoreReminders).to_string(),
-        }
-    }
-    i18n::tr(i18n::TrKey::NoMoreReminders).to_string()
-}
-
 fn refresh_menu_items(
     tray: &TrayIcon,
     next_item: &MenuItem,
@@ -257,7 +228,7 @@ fn pump_messages() {
             }
             if msg.message != 0x0113 {
                 // Log every dispatched message with hwnd and message code
-                debug_log(&format!(
+                debug_log(format!(
                     "[main] pump: hwnd={:?} msg=0x{:04x}\n",
                     msg.hwnd, msg.message
                 ));
@@ -466,13 +437,13 @@ fn main() {
         gui_hwnd,
     )
     .map(|()| {
-        debug_log(&format!(
+        debug_log(format!(
             "[main] hotkey registered: {}+{}\n",
             config.general.hotkey_mod, config.general.hotkey_key
         ));
     })
     .unwrap_or_else(|e| {
-        audio::debug_log(&format!("[tip_clock] hotkey init failed: {e}\n"));
+        audio::debug_log(format!("[tip_clock] hotkey init failed: {e}\n"));
     });
 
     CONFIG.set(std::sync::Mutex::new(config)).ok();
@@ -501,7 +472,7 @@ fn main() {
     let sep4 = PredefinedMenuItem::separator();
 
     MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| {
-        debug_log(&format!("[main] tray menu clicked: {:?}\n", event.id));
+        debug_log(format!("[main] tray menu clicked: {:?}\n", event.id));
         match event.id.as_ref() {
             "exit" => {
                 debug_log("[main] tray menu: exit\n");
@@ -544,7 +515,7 @@ fn main() {
                 NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
             }
             _ => {
-                debug_log(&format!("[main] tray menu: unknown id '{:?}'\n", event.id));
+                debug_log(format!("[main] tray menu: unknown id '{:?}'\n", event.id));
             }
         }
     })));
@@ -613,7 +584,7 @@ fn main() {
         loop_count += 1;
         if loop_count % 120 == 1 {
             // Heartbeat roughly every 60 seconds (120 iterations × 500ms)
-            debug_log(&format!("[main] heartbeat: iteration {loop_count}\n"));
+            debug_log(format!("[main] heartbeat: iteration {loop_count}\n"));
         }
         pump_messages();
 
@@ -658,7 +629,7 @@ fn main() {
                     let entries = cfg.entries_at(current.0, current.1, current.2);
                     for entry in entries {
                         if entry.ring != RingType::None {
-                            debug_log(&format!(
+                            debug_log(format!(
                                 "[main] schedule match at {:02}:{:02}:{:02}, ring={:?}\n",
                                 current.0, current.1, current.2, entry.ring
                             ));

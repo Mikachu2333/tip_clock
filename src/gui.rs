@@ -140,12 +140,7 @@ const BI_RGB: u32 = 0;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
 
-#[allow(dead_code)]
-const SWP_NOSIZE: u32 = 0x0001;
-#[allow(dead_code)]
-const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
-#[allow(dead_code)]
 const SWP_SHOWWINDOW: u32 = 0x0040;
 const SW_HIDE: i32 = 0;
 
@@ -182,6 +177,14 @@ const IDM_EXIT: usize = 1002;
 struct POINT {
     x: i32,
     y: i32,
+}
+
+#[repr(C)]
+struct RECT {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
 }
 
 #[repr(C)]
@@ -315,6 +318,7 @@ unsafe extern "system" {
     fn GetCursorPos(lpPoint: *mut POINT) -> i32;
     fn SetForegroundWindow(hWnd: HWND) -> i32;
     fn PostMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> i32;
+    fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -378,6 +382,12 @@ fn debug_log(s: impl ToString) {
     crate::audio::debug_log(s);
 }
 
+/// Ease-out cubic: fast start, smooth deceleration.
+fn ease_out_cubic(t: f32) -> f32 {
+    let u = 1.0 - t;
+    1.0 - u * u * u
+}
+
 fn get_system_dpi() -> f32 {
     unsafe {
         let screen_dc = GetDC(std::ptr::null_mut());
@@ -421,6 +431,25 @@ const PAD_Y: i32 = 6;
 //  Clock window state
 // ───────────────────────────────────────────────
 
+const ANIM_TIMER_ID: usize = 2;
+const ANIM_INTERVAL_MS: u32 = 16;
+const SLIDE_IN_MS: u32 = 1000;
+const SLIDE_OUT_MS: u32 = 3000;
+const SLIDE_DISTANCE: i32 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimKind {
+    Enter,
+    Exit,
+}
+
+struct Animation {
+    kind: AnimKind,
+    start: std::time::Instant,
+    start_y: i32,
+    end_y: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClockWindowConfig {
     pub bg_color: (u8, u8, u8, u8), // r, g, b, opacity(0-100)
@@ -434,7 +463,7 @@ struct GuiState {
     shown_at: Option<std::time::Instant>,
     width: i32,
     height: i32,
-    text_h: i32, // measured text height for vertical centering
+    text_h: i32,
     // GDI objects
     mem_dc: RawPtr,
     bitmap: RawPtr,
@@ -445,6 +474,7 @@ struct GuiState {
     gp_string_format: GpObj,
     last_time_str: String,
     timer_update_id: usize,
+    animation: Option<Animation>,
 }
 
 static GUI_STATE: OnceLock<Mutex<Option<GuiState>>> = OnceLock::new();
@@ -476,24 +506,33 @@ unsafe extern "system" fn clock_wndproc(
             let timer_id = wparam;
             if let Some(state_lock) = GUI_STATE.get() {
                 let mut state_opt = state_lock.lock().unwrap();
-                if let Some(ref mut state) = *state_opt
-                    && timer_id == state.timer_update_id
-                {
-                    let now = Local::now();
-                    let time_str =
-                        format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
-                    if time_str != state.last_time_str {
-                        state.last_time_str = time_str;
+                if let Some(ref mut state) = *state_opt {
+                    if timer_id == ANIM_TIMER_ID {
                         unsafe {
-                            redraw_layered_window(state);
+                            process_animation_frame(state);
                         }
-                    }
-
-                    if let Some(shown_at) = state.shown_at {
-                        let elapsed = shown_at.elapsed().as_secs() as u32;
-                        if elapsed >= state.config.display_time {
+                        if state.animation.is_none() && !GUI_VISIBLE.load(Ordering::Relaxed) {
                             unsafe {
-                                hide_clock_internal(state);
+                                KillTimer(hwnd, ANIM_TIMER_ID);
+                            }
+                        }
+                    } else if timer_id == state.timer_update_id {
+                        let now = Local::now();
+                        let time_str =
+                            format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+                        if time_str != state.last_time_str {
+                            state.last_time_str = time_str;
+                            unsafe {
+                                redraw_layered_window(state);
+                            }
+                        }
+
+                        if let Some(shown_at) = state.shown_at {
+                            let elapsed = shown_at.elapsed().as_secs() as u32;
+                            if elapsed >= state.config.display_time {
+                                unsafe {
+                                    hide_clock_internal(state);
+                                }
                             }
                         }
                     }
@@ -597,13 +636,81 @@ unsafe fn show_clock_context_menu(hwnd: HWND) {
 //  Redraw with GDI+ (proper alpha, zero hacks)
 // ───────────────────────────────────────────────
 
-unsafe fn redraw_layered_window(state: &mut GuiState) {
+// ───────────────────────────────────────────────
+//  Animation
+// ───────────────────────────────────────────────
+
+unsafe fn process_animation_frame(state: &mut GuiState) {
+    let Some(ref anim) = state.animation else {
+        return;
+    };
+    let (duration_ms, fade_dir) = match anim.kind {
+        AnimKind::Enter => (SLIDE_IN_MS, 1.0f32),
+        AnimKind::Exit => (SLIDE_OUT_MS, -1.0f32),
+    };
+    let elapsed_ms = anim.start.elapsed().as_millis() as u32;
+    let t = (elapsed_ms as f32 / duration_ms as f32).min(1.0);
+    let e = ease_out_cubic(t);
+    let kind = anim.kind;
+    let cur_y = anim.start_y + ((anim.end_y - anim.start_y) as f32 * e) as i32;
+    let alpha = if fade_dir > 0.0 {
+        (255.0 * e) as u8
+    } else {
+        (255.0 * (1.0 - e)) as u8
+    };
+
+    let hwnd = state.hwnd.as_hwnd();
+    let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+
+    // Update time and redraw with current alpha.
+    let now = Local::now();
+    state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    unsafe {
+        redraw_layered_window_with_alpha(state, alpha);
+        SetWindowPos(
+            hwnd,
+            (-1isize) as HWND,
+            (sw - state.width) / 2,
+            cur_y,
+            state.width,
+            state.height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
+    match kind {
+        AnimKind::Enter => {
+            if t >= 1.0 {
+                state.animation = None;
+                GUI_VISIBLE.store(true, Ordering::Relaxed);
+                state.shown_at = Some(std::time::Instant::now());
+                unsafe {
+                    KillTimer(hwnd, ANIM_TIMER_ID);
+                    SetTimer(hwnd, state.timer_update_id, 500, std::ptr::null_mut());
+                }
+            }
+        }
+        AnimKind::Exit => {
+            if t >= 1.0 {
+                state.animation = None;
+                unsafe {
+                    KillTimer(hwnd, ANIM_TIMER_ID);
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+                GUI_VISIBLE.store(false, Ordering::Relaxed);
+                state.shown_at = None;
+                debug_log("[gui] clock hidden\n");
+            }
+        }
+    }
+}
+
+unsafe fn redraw_layered_window_with_alpha(state: &mut GuiState, constant_alpha: u8) {
     unsafe {
         let w = state.width;
         let h = state.height;
         let hdc = state.mem_dc.as_hdc();
 
-        // Zero the DIB so fully-transparent areas don't contain stale data.
         {
             let bits = std::slice::from_raw_parts_mut(
                 state.bitmap_bits.0 as *mut u8,
@@ -616,18 +723,14 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
         let alpha = ((opacity_pct as f32 / 100.0) * 255.0) as u8;
         let (tr, tg, tb) = state.config.text_color;
 
-        // Create GDI+ Graphics from our memory DC
         let mut graphics: GpGraphics = std::ptr::null_mut();
         if GdipCreateFromHDC(hdc, &mut graphics) != GDI_PLUS_OK {
             return;
         }
 
-        // Quality settings
         GdipSetTextRenderingHint(graphics, TEXT_RENDERING_HINT_ANTIALIAS);
         GdipSetSmoothingMode(graphics, SMOOTHING_MODE_HIGH_QUALITY);
 
-        // ── Background fill ─────────────────────
-        // GDI+ ARGB = 0xAARRGGBB
         let bg_argb: u32 =
             ((alpha as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
         let mut bg_brush: GpBrush = std::ptr::null_mut();
@@ -636,14 +739,11 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
             GdipDeleteBrush(bg_brush);
         }
 
-        // ── Text ────────────────────────────────
         let text_argb: u32 =
             (0xFF_000000u32) | ((tr as u32) << 16) | ((tg as u32) << 8) | (tb as u32);
         let mut text_brush: GpBrush = std::ptr::null_mut();
         if GdipCreateSolidFill(text_argb, &mut text_brush) == GDI_PLUS_OK {
             let text_wide = to_wide(&state.last_time_str);
-            // Center text vertically: offset the layout rect so the known
-            // text height sits in the middle of the window.
             let th = state.text_h as f32;
             let y_off = ((h - state.text_h) as f32) / 2.0;
             let layout_rect = RectF {
@@ -666,11 +766,10 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
 
         GdipDeleteGraphics(graphics);
 
-        // ── Display via UpdateLayeredWindow ──────
         let blend = BLENDFUNCTION {
             blend_op: 0,
             blend_flags: 0,
-            source_constant_alpha: 255,
+            source_constant_alpha: constant_alpha,
             alpha_format: AC_SRC_ALPHA,
         };
         let pt_src = POINT { x: 0, y: 0 };
@@ -691,18 +790,40 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
     }
 }
 
-// ───────────────────────────────────────────────
+unsafe fn redraw_layered_window(state: &mut GuiState) {
+    unsafe {
+        redraw_layered_window_with_alpha(state, 255);
+    }
+}
+
+// ───────────────────────
 //  Show / hide
-// ───────────────────────────────────────────────
+// ───────────────────────
+//  Show / hide
+// ───────────────────────
 
 unsafe fn hide_clock_internal(state: &mut GuiState) {
     unsafe {
         let hwnd = state.hwnd.as_hwnd();
+
+        // Already animating or already hidden.
+        if state.animation.is_some() || !GUI_VISIBLE.load(Ordering::Relaxed) {
+            return;
+        }
+
         KillTimer(hwnd, state.timer_update_id);
-        state.shown_at = None;
-        GUI_VISIBLE.store(false, Ordering::Relaxed);
-        debug_log("[gui] clock hidden\n");
-        ShowWindow(hwnd, SW_HIDE);
+
+        let mut rect = std::mem::zeroed::<RECT>();
+        GetWindowRect(hwnd, &mut rect);
+        let cur_y = rect.top;
+
+        state.animation = Some(Animation {
+            kind: AnimKind::Exit,
+            start: std::time::Instant::now(),
+            start_y: cur_y,
+            end_y: cur_y - SLIDE_DISTANCE - state.height,
+        });
+        SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut());
     }
 }
 
@@ -739,35 +860,24 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
             return;
         }
 
-        let sw = GetSystemMetrics(SM_CXSCREEN);
-        let sh = GetSystemMetrics(SM_CYSCREEN);
+        if state.animation.is_some() {
+            return;
+        }
 
-        let x = (sw - state.width) / 2;
-        let y = sh / 6;
+        let sh = GetSystemMetrics(SM_CYSCREEN);
+        let target_y = sh / 6;
 
         let now = Local::now();
         state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
-        redraw_layered_window(state);
 
-        SetWindowPos(
-            hwnd,
-            (-1isize) as HWND,
-            x,
-            y,
-            state.width,
-            state.height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
-
-        GUI_VISIBLE.store(true, Ordering::Relaxed);
-        state.shown_at = Some(std::time::Instant::now());
-        debug_log(&format!(
-            "[gui] clock shown at ({x}, {y}) size=({},{})\n",
-            state.width, state.height
-        ));
-
+        state.animation = Some(Animation {
+            kind: AnimKind::Enter,
+            start: std::time::Instant::now(),
+            start_y: target_y - SLIDE_DISTANCE,
+            end_y: target_y,
+        });
         KillTimer(hwnd, state.timer_update_id);
-        SetTimer(hwnd, state.timer_update_id, 500, std::ptr::null_mut());
+        SetTimer(hwnd, ANIM_TIMER_ID, ANIM_INTERVAL_MS, std::ptr::null_mut());
     }
 }
 
@@ -1070,6 +1180,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         gp_string_format: GpObj(gp_sf as isize),
         last_time_str: String::new(),
         timer_update_id: 1,
+        animation: None,
     };
 
     GUI_STATE.set(Mutex::new(Some(state))).ok();
