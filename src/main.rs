@@ -139,6 +139,20 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+fn restart_app() {
+    if let Ok(exe_path) = std::env::current_exe() {
+        debug_log(format!("[main] restarting: {:?}\n", exe_path));
+        // Release single-instance lock before spawning new process
+        if let Some(mtx) = INSTANCE.get()
+            && let Ok(mut guard) = mtx.lock()
+        {
+            guard.take(); // drop SingleInstance here
+        }
+        let _ = std::process::Command::new(&exe_path).spawn();
+    }
+    std::process::exit(0);
+}
+
 // ───────────────────────────────────────────────
 //  Global state
 // ───────────────────────────────────────────────
@@ -148,6 +162,7 @@ static AUDIO: OnceLock<AudioPlayer> = OnceLock::new();
 static SKIP_COUNT: OnceLock<AtomicU32> = OnceLock::new();
 static PAUSED: OnceLock<AtomicBool> = OnceLock::new();
 static NEED_REFRESH: OnceLock<AtomicBool> = OnceLock::new();
+static INSTANCE: OnceLock<std::sync::Mutex<Option<SingleInstance>>> = OnceLock::new();
 
 // ───────────────────────────────────────────────
 //  Menu helpers
@@ -366,6 +381,7 @@ fn main() {
     if !instance.is_single() {
         std::process::exit(0);
     }
+    INSTANCE.set(std::sync::Mutex::new(Some(instance))).ok();
 
     // i18n
     i18n::init();
@@ -453,11 +469,13 @@ fn main() {
     let color_item = MenuItem::with_id("text_color", i18n::tr(i18n::TrKey::TextColor), true, None);
     let bg_color_item = MenuItem::with_id("bg_color", i18n::tr(i18n::TrKey::BgColor), true, None);
     let opacity_item = MenuItem::with_id("opacity", i18n::tr(i18n::TrKey::Opacity), true, None);
+    let restart_item = MenuItem::with_id("restart", i18n::tr(i18n::TrKey::Restart), true, None);
     let exit_item = MenuItem::with_id("exit", i18n::tr(i18n::TrKey::Exit), true, None);
     let sep = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
     let sep3 = PredefinedMenuItem::separator();
     let sep4 = PredefinedMenuItem::separator();
+    let sep5 = PredefinedMenuItem::separator();
 
     MenuEvent::set_event_handler(Some(Box::new(|event: MenuEvent| {
         debug_log(format!("[main] tray menu clicked: {:?}\n", event.id));
@@ -465,6 +483,10 @@ fn main() {
             "exit" => {
                 debug_log("[main] tray menu: exit\n");
                 std::process::exit(0);
+            }
+            "restart" => {
+                debug_log("[main] tray menu: restart\n");
+                restart_app();
             }
             "skip_next" => {
                 debug_log("[main] tray menu: skip next\n");
@@ -527,6 +549,8 @@ fn main() {
     menu.append(&bg_color_item).ok();
     menu.append(&opacity_item).ok();
     menu.append(&sep4).ok();
+    menu.append(&restart_item).ok();
+    menu.append(&sep5).ok();
     menu.append(&exit_item).ok();
 
     // Create tray icon from embedded 256×256 RGBA raw data

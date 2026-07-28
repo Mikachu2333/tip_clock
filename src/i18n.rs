@@ -48,6 +48,7 @@ pub enum TrKey {
     Pause,
     Resume,
     Exit,
+    Restart,
     EditConfig,
     TextColor,
     BgColor,
@@ -115,6 +116,10 @@ pub fn tr(key: TrKey) -> &'static str {
         TrKey::Opacity => match lang {
             Lang::En => "Opacity",
             Lang::Zh => "不透明度",
+        },
+        TrKey::Restart => match lang {
+            Lang::En => "Restart",
+            Lang::Zh => "重启",
         },
     }
 }
