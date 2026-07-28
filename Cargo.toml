@@ -19,7 +19,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 tray-icon = "0.24.2"
 single-instance = "0.3.3"
 win_msgbox_timeout = "1.2.1"
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav", "flac", "mp3"] }
+rodio = { version = "0.22.2", default-features = false, features = [
+    "playback",
+    "wav",
+    "flac",
+    "mp3",
+] }
 
 [build-dependencies]
 winresource = "0.1.31"
