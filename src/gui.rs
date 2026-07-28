@@ -164,12 +164,17 @@ const WM_TIMER: u32 = 0x0113;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_DESTROY: u32 = 0x0002;
 const WM_CLOSE: u32 = 0x0010;
+const WM_PAINT: u32 = 0x000F;
+const WM_ERASEBKGND: u32 = 0x0014;
+const WM_CTLCOLOREDIT: u32 = 0x0133;
 const WM_SETCURSOR: u32 = 0x0020;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;
 const HTCAPTION: isize = 2;
 
 const IDC_ARROW: *const u16 = 32512usize as *const u16;
+const NULL_BRUSH: i32 = 5;
+const TRANSPARENT_BK: i32 = 1;
 
 const LOGPIXELSY: i32 = 90; // pixels per logical inch (vertical DPI)
 
@@ -212,6 +217,17 @@ struct BLENDFUNCTION {
     blend_flags: u8,
     source_constant_alpha: u8,
     alpha_format: u8,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct PAINTSTRUCT {
+    hdc: HDC,
+    fErase: i32,
+    rcPaint: RECT,
+    fRestore: i32,
+    fIncUpdate: i32,
+    rgbReserved: [u8; 32],
 }
 
 #[repr(C)]
@@ -310,6 +326,15 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn BeginPaint(hWnd: HWND, lpPaint: *mut PAINTSTRUCT) -> HDC;
+    fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> i32;
+    fn GetClientRect(hWnd: HWND, lpRect: *mut RECT) -> i32;
+    fn GetStockObject(fnObject: i32) -> HGDIOBJ;
+    fn SetBkMode(hdc: HDC, mode: i32) -> i32;
 }
 
 // ───────────────────────────────────────────────
@@ -842,12 +867,22 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
     unsafe {
         let hwnd = state.hwnd.as_hwnd();
 
-        if GUI_VISIBLE.load(Ordering::Relaxed) {
-            state.shown_at = Some(std::time::Instant::now());
-            return;
+        // If an exit animation is in progress (e.g. schedule fires while the
+        // user is manually hiding the clock), cancel it so we can restart a
+        // fresh enter animation immediately.
+        if let Some(ref anim) = state.animation {
+            if anim.kind == AnimKind::Exit {
+                KillTimer(hwnd, ANIM_TIMER_ID);
+                state.animation = None;
+            } else {
+                // Enter animation already running — nothing to do.
+                return;
+            }
         }
 
-        if state.animation.is_some() {
+        // Fully visible with no animation — just refresh the auto-hide timer.
+        if GUI_VISIBLE.load(Ordering::Relaxed) {
+            state.shown_at = Some(std::time::Instant::now());
             return;
         }
 
@@ -1337,7 +1372,7 @@ const WS_TABSTOP: u32 = 0x0001_0000;
 const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
 const SW_SHOW: i32 = 5;
 const WM_SETFONT: u32 = 0x0030;
-const PANEL_FONT_SIZE_PT: f32 = 9.0;
+const PANEL_FONT_SIZE_PT: f32 = 11.0;
 
 type HFONT = *mut std::ffi::c_void;
 
@@ -1384,6 +1419,172 @@ fn fire_opacity_close() {
     }
 }
 
+// ───────────────────────────────────────────────
+//  Panel layout constants (96 DPI reference)
+// ───────────────────────────────────────────────
+
+const PANEL_CLIENT_W: i32 = 420;
+const PANEL_CLIENT_H: i32 = 120;
+const PANEL_PAD: i32 = 20;
+
+// Colours
+const PANEL_BG: u32 = 0xFF_F5F5F5u32;
+const PANEL_TEXT: u32 = 0xFF_333333u32;
+
+// ───────────────────────────────────────────────
+//  GDI+ panel drawing
+// ───────────────────────────────────────────────
+
+fn panel_paint(hwnd: HWND) {
+    unsafe {
+        let mut ps = PAINTSTRUCT {
+            hdc: std::ptr::null_mut(),
+            fErase: 0,
+            rcPaint: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            fRestore: 0,
+            fIncUpdate: 0,
+            rgbReserved: [0u8; 32],
+        };
+        let hdc = BeginPaint(hwnd, &mut ps);
+        if hdc.is_null() {
+            return;
+        }
+
+        let mut graphics: GpGraphics = std::ptr::null_mut();
+        if GdipCreateFromHDC(hdc, &mut graphics) != GDI_PLUS_OK {
+            EndPaint(hwnd, &ps);
+            return;
+        }
+        GdipSetTextRenderingHint(graphics, TEXT_RENDERING_HINT_ANTIALIAS);
+        GdipSetSmoothingMode(graphics, SMOOTHING_MODE_HIGH_QUALITY);
+
+        // ── Background fill ──
+        let mut bg_brush: GpBrush = std::ptr::null_mut();
+        GdipCreateSolidFill(PANEL_BG, &mut bg_brush);
+        let mut rc_client = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        GetClientRect(hwnd, &mut rc_client);
+        let cw = rc_client.right - rc_client.left;
+        let ch = rc_client.bottom - rc_client.top;
+        GdipFillRectangleI(graphics, bg_brush, 0, 0, cw, ch);
+        GdipDeleteBrush(bg_brush);
+
+        // ── Font & brushes ──
+        let dpi = get_system_dpi();
+        let scale = dpi / 96.0;
+        let scaled_pt = PANEL_FONT_SIZE_PT * scale;
+        let face_w = to_wide(FONT_NAME);
+        let mut family: GpFontFamily = std::ptr::null_mut();
+        let mut gp_font: GpFont = std::ptr::null_mut();
+        if GdipCreateFontFamilyFromName(face_w.as_ptr(), std::ptr::null_mut(), &mut family)
+            == GDI_PLUS_OK
+        {
+            GdipCreateFont(
+                family,
+                scaled_pt,
+                FONT_STYLE_REGULAR,
+                UNIT_POINT,
+                &mut gp_font,
+            );
+        }
+
+        let mut fmt_left: GpStringFormat = std::ptr::null_mut();
+        GdipCreateStringFormat(0, 0, &mut fmt_left);
+        if !fmt_left.is_null() {
+            GdipSetStringFormatAlign(fmt_left, 0);
+            GdipSetStringFormatLineAlign(fmt_left, 0);
+        }
+
+        let mut text_brush: GpBrush = std::ptr::null_mut();
+        GdipCreateSolidFill(PANEL_TEXT, &mut text_brush);
+
+        let pad = (PANEL_PAD as f32 * scale) as i32;
+
+        // ── Description (auto-wrapped, 2 lines) ──
+        let desc_text = match crate::i18n::lang() {
+            crate::i18n::Lang::Zh => {
+                "调整时钟窗口的背景不透明度。\n0 = 完全透明（不可见）  ·  100 = 完全不透明（纯色背景）"
+            }
+            _ => {
+                "Adjust the background opacity of the clock overlay.\n0 = fully transparent (invisible)  ·  100 = fully opaque (solid)"
+            }
+        };
+        let desc_w = to_wide(desc_text);
+        let desc_y = pad;
+        let desc_h = (48.0 * scale) as i32;
+        let desc_rect = RectF {
+            x: pad as f32,
+            y: desc_y as f32,
+            width: (cw - 2 * pad) as f32,
+            height: desc_h as f32,
+        };
+        if !gp_font.is_null() && !fmt_left.is_null() && !text_brush.is_null() {
+            GdipDrawString(
+                graphics,
+                desc_w.as_ptr(),
+                -1,
+                gp_font,
+                &desc_rect,
+                fmt_left,
+                text_brush,
+            );
+        }
+
+        // ── Label ──
+        let label_y = desc_y + desc_h + (10.0 * scale) as i32;
+        let label_text = match crate::i18n::lang() {
+            crate::i18n::Lang::Zh => "当前不透明度：",
+            _ => "Current opacity:",
+        };
+        let label_w = to_wide(label_text);
+        let label_rect = RectF {
+            x: pad as f32,
+            y: label_y as f32,
+            width: 145.0 * scale,
+            height: 24.0 * scale,
+        };
+        if !gp_font.is_null() && !fmt_left.is_null() && !text_brush.is_null() {
+            GdipSetStringFormatLineAlign(fmt_left, STRING_ALIGN_CENTER);
+            GdipDrawString(
+                graphics,
+                label_w.as_ptr(),
+                -1,
+                gp_font,
+                &label_rect,
+                fmt_left,
+                text_brush,
+            );
+            GdipSetStringFormatLineAlign(fmt_left, 0);
+        }
+
+        // ── Cleanup ──
+        if !gp_font.is_null() {
+            GdipDeleteFont(gp_font);
+        }
+        if !family.is_null() {
+            GdipDeleteFontFamily(family);
+        }
+        if !fmt_left.is_null() {
+            GdipDeleteStringFormat(fmt_left);
+        }
+        if !text_brush.is_null() {
+            GdipDeleteBrush(text_brush);
+        }
+
+        GdipDeleteGraphics(graphics);
+        EndPaint(hwnd, &ps);
+    }
+}
+
 /// Create the modeless opacity panel (hidden).
 /// Must be called once from the main thread after `create_clock_window`.
 pub fn create_opacity_panel() -> Result<(), String> {
@@ -1414,14 +1615,12 @@ pub fn create_opacity_panel() -> Result<(), String> {
         return Err("RegisterClassExW failed for opacity panel".into());
     }
 
-    // ── DPI-aware sizing, same pattern as the clock window ──
+    // ── DPI-aware sizing ──
     let dpi = get_system_dpi();
-    let scaled_font_size = PANEL_FONT_SIZE_PT * (dpi / 96.0);
     let scale = dpi / 96.0;
 
-    // Base client area at 96 DPI: label row + edit row
-    let client_w: i32 = (360.0 * scale) as i32;
-    let client_h: i32 = (84.0 * scale) as i32;
+    let client_w: i32 = (PANEL_CLIENT_W as f32 * scale) as i32;
+    let client_h: i32 = (PANEL_CLIENT_H as f32 * scale) as i32;
     let mut rc = RECT {
         left: 0,
         top: 0,
@@ -1434,7 +1633,6 @@ pub fn create_opacity_panel() -> Result<(), String> {
     let dlg_w = rc.right - rc.left;
     let dlg_h = rc.bottom - rc.top;
 
-    // Position: centre of screen, shifted upward a little
     let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
     let dlg_x = (screen_w - dlg_w) / 2;
@@ -1467,65 +1665,44 @@ pub fn create_opacity_panel() -> Result<(), String> {
         return Err("CreateWindowExW failed for opacity panel".into());
     }
 
-    // ── Create DPI-scaled font (9pt ClearType, same face as clock) ──
+    // ── DPI-scaled font for the edit control ──
+    let scaled_font_size = PANEL_FONT_SIZE_PT * scale;
     let font_height = -(scaled_font_size) as i32;
-    let face_name = to_wide(FONT_NAME);
     let ui_font = unsafe {
         CreateFontW(
             font_height,
             0,
             0,
             0,
-            400, // FW_NORMAL
+            400,
             0,
             0,
             0,
-            1, // DEFAULT_CHARSET
-            0, // OUT_DEFAULT_PRECIS
-            0, // CLIP_DEFAULT_PRECIS
-            5, // CLEARTYPE_QUALITY
-            0, // DEFAULT_PITCH | FF_DONTCARE
-            face_name.as_ptr(),
+            1,
+            0,
+            0,
+            5,
+            0,
+            to_wide(FONT_NAME).as_ptr(),
         )
     };
 
     unsafe {
-        // Explanatory label
-        let explain_text = match crate::i18n::lang() {
-            crate::i18n::Lang::Zh => "背景不透明度 (0=全透明, 100=不透明)",
-            _ => "Background opacity (0=transparent, 100=solid)",
-        };
-        let explain_w = to_wide(explain_text);
-        let label = CreateWindowExW(
-            0,
-            to_wide("STATIC").as_ptr(),
-            explain_w.as_ptr(),
-            WS_CHILD | WS_VISIBLE,
-            (10.0 * scale) as i32,
-            (10.0 * scale) as i32,
-            client_w - (20.0 * scale) as i32,
-            (22.0 * scale) as i32,
-            hwnd,
-            std::ptr::null_mut(),
-            hinst,
-            std::ptr::null_mut(),
-        );
-        if !ui_font.is_null() {
-            SendMessageW(label, WM_SETFONT, ui_font as WPARAM, 1);
-        }
+        let edit_x = (PANEL_PAD as f32 * scale) as i32 + (150.0 * scale) as i32;
+        let edit_y =
+            (PANEL_PAD as f32 * scale) as i32 + (48.0 * scale) as i32 + (10.0 * scale) as i32;
+        let edit_w = (70.0 * scale) as i32;
+        let edit_h = (26.0 * scale) as i32;
 
-        // Numeric input box
-        let edit_class = to_wide("EDIT");
-        let init_val = to_wide(&get_current_opacity().to_string());
         let edit = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            edit_class.as_ptr(),
-            init_val.as_ptr(),
+            to_wide("EDIT").as_ptr(),
+            to_wide(&get_current_opacity().to_string()).as_ptr(),
             WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_NUMBER,
-            (10.0 * scale) as i32,
-            (38.0 * scale) as i32,
-            (80.0 * scale) as i32,
-            (26.0 * scale) as i32,
+            edit_x,
+            edit_y,
+            edit_w,
+            edit_h,
             hwnd,
             IDC_OPACITY_EDIT as *mut std::ffi::c_void as HINSTANCE,
             hinst,
@@ -1548,30 +1725,25 @@ pub fn toggle_opacity_panel() {
     }
     unsafe {
         if IsWindowVisible(hwnd) != 0 {
-            // Hide
             ShowWindow(hwnd, SW_HIDE);
             fire_opacity_close();
         } else {
-            // Sync edit box to current opacity before showing
             let edit = GetDlgItem(hwnd, IDC_OPACITY_EDIT as i32);
             if !edit.is_null() {
                 let text = format!("{}", get_current_opacity());
-                let text_w = to_wide(&text);
-                SetWindowTextW(edit, text_w.as_ptr());
+                SetWindowTextW(edit, to_wide(&text).as_ptr());
             }
             ShowWindow(hwnd, SW_SHOW);
-            // Focus and select all text in the edit box for quick replacement
             let edit = GetDlgItem(hwnd, IDC_OPACITY_EDIT as i32);
             if !edit.is_null() {
                 SetFocus(edit);
-                // EM_SETSEL = 0x00B1: select all
-                SendMessageW(edit, 0x00B1, 0, -1);
+                SendMessageW(edit, 0x00B1, 0, -1); // EM_SETSEL — select all
             }
         }
     }
 }
 
-/// Read the edit control, parse value (clamp 0–100), and update opacity in real-time.
+/// Read the edit control, parse value (clamp 0–100), update opacity, and repaint.
 fn update_opacity_from_edit(hwnd: HWND) {
     let edit = unsafe { GetDlgItem(hwnd, IDC_OPACITY_EDIT as i32) };
     if edit.is_null() {
@@ -1580,7 +1752,7 @@ fn update_opacity_from_edit(hwnd: HWND) {
     let mut buf = [0u16; 8];
     let len = unsafe { GetWindowTextW(edit, buf.as_mut_ptr(), buf.len() as i32) };
     if len == 0 {
-        return; // empty input, don't change
+        return;
     }
     let text = String::from_utf16_lossy(&buf[..len as usize]);
     if let Ok(val) = text.parse::<u32>() {
@@ -1603,11 +1775,23 @@ unsafe extern "system" fn opacity_panel_wndproc(
             }
             return 0;
         }
+        WM_PAINT => {
+            panel_paint(hwnd);
+            return 0;
+        }
+        WM_ERASEBKGND => {
+            return 1;
+        }
+        WM_CTLCOLOREDIT => {
+            let hdc = wparam as HDC;
+            unsafe {
+                SetBkMode(hdc, TRANSPARENT_BK);
+            }
+            return unsafe { GetStockObject(NULL_BRUSH) } as LRESULT;
+        }
         WM_ACTIVATE => {
-            // Low word of wparam: WA_INACTIVE = 0, WA_ACTIVE = 1, WA_CLICKACTIVE = 2
             let code = (wparam as u32) & 0xFFFF;
             if code == 0 {
-                // Lost activation — dismiss
                 unsafe { ShowWindow(hwnd, SW_HIDE) };
                 fire_opacity_close();
             }
