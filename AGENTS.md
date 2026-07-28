@@ -15,7 +15,7 @@ cargo clippy             # zero warnings
 
 ## Project structure
 
-```
+```tree
 src/
 ├── main.rs      — entry point, single-instance, tray icon + menu, message pump,
 │                  auto-start registry, ChooseColor dialogs
@@ -42,7 +42,7 @@ config.toml      — generated on first run in EXE directory
 - Values clamped: `bg_opacity` <= 100, `display_time` 1-60, `volume` <= 100.
 
 | Section | Key | Type | Default |
-|---------|-----|------|---------|
+| --------- | ----- | ------ | --------- |
 | `[general]` | `auto_start` | bool | `false` |
 | | `bg_r` / `bg_g` / `bg_b` | u8 (0-255) | `0, 0, 0` |
 | | `bg_opacity` | u8 (0-100) | `100` |
