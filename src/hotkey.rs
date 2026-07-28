@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 type HWND = *mut std::ffi::c_void;
 type HHOOK = *mut std::ffi::c_void;
@@ -38,8 +38,6 @@ unsafe extern "system" {
 static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
 static HOTKEY_VK: AtomicIsize = AtomicIsize::new(0);
 static HOTKEY_MODS: AtomicIsize = AtomicIsize::new(0);
-static HOTKEY_ACTIVE: AtomicBool = AtomicBool::new(false);
-static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
 
 fn debug_log(s: impl ToString) {
     crate::audio::debug_log(s);
@@ -218,8 +216,6 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
         return Err("SetWindowsHookExW failed".into());
     }
 
-    HOOK_HANDLE.store(hook as isize, Ordering::Relaxed);
-    HOTKEY_ACTIVE.store(true, Ordering::Relaxed);
     debug_log("[hotkey] keyboard hook installed successfully\n");
 
     Ok(())

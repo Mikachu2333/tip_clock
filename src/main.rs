@@ -198,9 +198,9 @@ fn refresh_menu_items(
     }
 
     show_item.set_text(if gui::is_visible() {
-        format!("{} (visible)", i18n::tr(i18n::TrKey::ShowClock))
+        i18n::tr(i18n::TrKey::HideClock)
     } else {
-        i18n::tr(i18n::TrKey::ShowClock).to_string()
+        i18n::tr(i18n::TrKey::ShowClock)
     });
 }
 

@@ -2,7 +2,7 @@
 
 use crate::config::GeneralConfig;
 use chrono::{Local, Timelike};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 // ───────────────────────────────────────────────
@@ -106,9 +106,22 @@ unsafe extern "system" {
         string_format: GpStringFormat,
         brush: GpBrush,
     ) -> i32;
+    fn GdipMeasureString(
+        graphics: GpGraphics,
+        string: *const u16,
+        length: i32,
+        font: GpFont,
+        layout_rect: *const RectF,
+        string_format: GpStringFormat,
+        bounding_box: *mut RectF,
+        codepoints_fitted: *mut i32,
+        lines_filled: *mut i32,
+    ) -> i32;
     fn GdipSetTextRenderingHint(graphics: GpGraphics, mode: i32) -> i32;
     fn GdipSetSmoothingMode(graphics: GpGraphics, mode: i32) -> i32;
-    fn GdipGetFontHeight(font: GpFont, graphics: GpGraphics, height: *mut f32) -> i32;
+    fn GdipGetCellAscent(font_family: GpFontFamily, style: i32, ascent: *mut u16) -> i32;
+    fn GdipGetCellDescent(font_family: GpFontFamily, style: i32, descent: *mut u16) -> i32;
+    fn GdipGetEmHeight(font_family: GpFontFamily, style: i32, em_height: *mut u16) -> i32;
 }
 
 // ───────────────────────────────────────────────
@@ -147,11 +160,8 @@ const HWND_TOPMOST: isize = -1;
 
 const WM_HOTKEY: u32 = 0x0312;
 const WM_USER_HOTKEY: u32 = 0x0401;
-const WM_NULL: u32 = 0x0000;
 const WM_TIMER: u32 = 0x0113;
 const WM_LBUTTONDOWN: u32 = 0x0201;
-const WM_RBUTTONUP: u32 = 0x0205;
-const WM_COMMAND: u32 = 0x0111;
 const WM_DESTROY: u32 = 0x0002;
 const WM_CLOSE: u32 = 0x0010;
 const WM_SETCURSOR: u32 = 0x0020;
@@ -162,14 +172,6 @@ const HTCAPTION: isize = 2;
 const IDC_ARROW: *const u16 = 32512usize as *const u16;
 
 const LOGPIXELSY: i32 = 90; // pixels per logical inch (vertical DPI)
-
-const MF_STRING: u32 = 0x0000_0000;
-const MF_SEPARATOR: u32 = 0x0000_0800;
-const TPM_RIGHTBUTTON: u32 = 0x0000_0002;
-const TPM_NONOTIFY: u32 = 0x0000_0080;
-
-const IDM_HIDE_CLOCK: usize = 1001;
-const IDM_EXIT: usize = 1002;
 
 // ───────────────────────────────────────────────
 //  Win32 structures
@@ -220,12 +222,12 @@ struct WNDCLASSEXW {
     cb_cls_extra: i32,
     cb_wnd_extra: i32,
     h_instance: HINSTANCE,
-    h_icon: HINSTANCE,
-    h_cursor: HINSTANCE,
+    h_icon: HWND,
+    h_cursor: HWND,
     hbr_background: HBRUSH,
     lpsz_menu_name: *const u16,
     lpsz_class_name: *const u16,
-    h_icon_sm: HINSTANCE,
+    h_icon_sm: HWND,
 }
 
 // ───────────────────────────────────────────────
@@ -300,26 +302,7 @@ unsafe extern "system" {
     fn SendMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
     fn ReleaseCapture() -> i32;
     fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> i32;
-    fn CreatePopupMenu() -> *mut std::ffi::c_void;
-    fn AppendMenuW(
-        hMenu: *mut std::ffi::c_void,
-        uFlags: u32,
-        uIDNewItem: usize,
-        lpNewItem: *const u16,
-    ) -> i32;
-    fn TrackPopupMenu(
-        hMenu: *mut std::ffi::c_void,
-        uFlags: u32,
-        x: i32,
-        y: i32,
-        nReserved: i32,
-        hWnd: HWND,
-        prcRect: *const std::ffi::c_void,
-    ) -> i32;
-    fn DestroyMenu(hMenu: *mut std::ffi::c_void) -> i32;
     fn GetCursorPos(lpPoint: *mut POINT) -> i32;
-    fn SetForegroundWindow(hWnd: HWND) -> i32;
-    fn PostMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> i32;
     fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> i32;
 }
 
@@ -466,7 +449,9 @@ struct GuiState {
     shown_at: Option<std::time::Instant>,
     width: i32,
     height: i32,
-    text_h: i32,
+    /// Pixel correction added to y_off so that digits (no ascenders/descenders)
+    /// are visually centered rather than the font cell metric centre.
+    text_y_correction: f32,
     // GDI objects
     mem_dc: RawPtr,
     bitmap: RawPtr,
@@ -482,7 +467,7 @@ struct GuiState {
 
 static GUI_STATE: OnceLock<Mutex<Option<GuiState>>> = OnceLock::new();
 static GUI_VISIBLE: AtomicBool = AtomicBool::new(false);
-static GUI_HWND_STATIC: AtomicI32 = AtomicI32::new(0);
+static GUI_HWND_STATIC: AtomicIsize = AtomicIsize::new(0);
 static POSITION_CALLBACK: OnceLock<Box<dyn Fn(i32, i32) + Send + Sync>> = OnceLock::new();
 
 // ───────────────────────────────────────────────
@@ -566,22 +551,6 @@ unsafe extern "system" fn clock_wndproc(
             return 0;
         }
 
-        WM_RBUTTONUP => {
-            unsafe {
-                show_clock_context_menu(hwnd);
-            }
-            return 0;
-        }
-
-        WM_COMMAND => {
-            match wparam {
-                IDM_HIDE_CLOCK => hide_clock(),
-                IDM_EXIT => std::process::exit(0),
-                _ => {}
-            }
-            return 0;
-        }
-
         WM_DESTROY | WM_CLOSE => {
             hide_clock();
             return 0;
@@ -617,44 +586,6 @@ unsafe extern "system" fn clock_wndproc(
         _ => {}
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
-unsafe fn show_clock_context_menu(hwnd: HWND) {
-    debug_log("[gui] right-click context menu shown\n");
-    unsafe {
-        let menu = CreatePopupMenu();
-        if menu.is_null() {
-            return;
-        }
-
-        let hide_text = crate::i18n::tr(crate::i18n::TrKey::ShowClock);
-        let hide_wide: Vec<u16> = hide_text.encode_utf16().chain(std::iter::once(0)).collect();
-        AppendMenuW(menu, MF_STRING, IDM_HIDE_CLOCK, hide_wide.as_ptr());
-
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-
-        let exit_text = crate::i18n::tr(crate::i18n::TrKey::Exit);
-        let exit_wide: Vec<u16> = exit_text.encode_utf16().chain(std::iter::once(0)).collect();
-        AppendMenuW(menu, MF_STRING, IDM_EXIT, exit_wide.as_ptr());
-
-        let mut pt = POINT { x: 0, y: 0 };
-        GetCursorPos(&mut pt);
-
-        SetForegroundWindow(hwnd);
-
-        TrackPopupMenu(
-            menu,
-            TPM_RIGHTBUTTON | TPM_NONOTIFY,
-            pt.x,
-            pt.y,
-            0,
-            hwnd,
-            std::ptr::null(),
-        );
-
-        PostMessageW(hwnd, WM_NULL, 0, 0);
-        DestroyMenu(menu);
-    }
 }
 
 // ───────────────────────────────────────────────
@@ -789,13 +720,16 @@ unsafe fn redraw_layered_window_with_alpha(state: &mut GuiState, constant_alpha:
         let mut text_brush: GpBrush = std::ptr::null_mut();
         if GdipCreateSolidFill(text_argb, &mut text_brush) == GDI_PLUS_OK {
             let text_wide = to_wide(&state.last_time_str);
-            let th = state.text_h as f32;
-            let y_off = ((h - state.text_h) as f32) / 2.0;
+            // Use the full window area as the layout rectangle.  GDI+ centres
+            // the *font cell* inside it, which makes pure‑digit strings sit
+            // slightly too high.  Shift the rectangle down by the pre‑computed
+            // per‑font correction so the digit mass appears visually centred.
+            let correction = state.text_y_correction;
             let layout_rect = RectF {
                 x: 0.0,
-                y: y_off,
+                y: correction,
                 width: w as f32,
-                height: th,
+                height: h as f32,
             };
             GdipDrawString(
                 graphics,
@@ -1049,6 +983,36 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         GdipSetStringFormatLineAlign(gp_sf, STRING_ALIGN_CENTER);
     }
 
+    // ── Compute vertical correction for visual centering ────
+    // GDI+ STRING_ALIGN_CENTER centres the *font cell* (ascent+descent)
+    // in the layout rectangle.  For digit-only strings like "88:88:88"
+    // that have no ascenders / descenders, the visible glyphs sit lower
+    // than the cell centre — they appear slightly too high.
+    // We compute a per‑font correction (in pixels) that shifts the
+    // layout rectangle down so the visible digit mass is centred.
+    let text_y_correction: f32 = {
+        let mut ascent: u16 = 0;
+        let mut descent: u16 = 0;
+        let mut em_h: u16 = 0;
+        unsafe {
+            GdipGetCellAscent(gp_family, FONT_STYLE_REGULAR, &mut ascent);
+            GdipGetCellDescent(gp_family, FONT_STYLE_REGULAR, &mut descent);
+            GdipGetEmHeight(gp_family, FONT_STYLE_REGULAR, &mut em_h);
+        }
+        if em_h > 0 {
+            let scale = scaled_font_size / em_h as f32;
+            // cell centre relative to baseline (positive = below baseline in device space)
+            let cell_centre = (ascent as f32 - descent as f32) / 2.0 * scale;
+            // approximate digit visual centre: 0.72 × ascent (cap‑height / 2)
+            let digit_centre = ascent as f32 * 0.36 * scale;
+            // correction = how far the digit centre is *above* the cell centre
+            // (>0 → push layout rect down; <0 → push up)
+            (cell_centre - digit_centre).max(0.0)
+        } else {
+            0.0
+        }
+    };
+
     // Measure the display string extent
     let display_wide = to_wide(DISPLAY_STR);
     // Dynamic measurement using a temporary GDI+ bitmap (top-down DIB).
@@ -1084,90 +1048,54 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
 
     let mut mg: GpGraphics = std::ptr::null_mut();
     let text_w: i32;
-    let mut text_h: i32;
+    let text_h: i32;
 
     if unsafe { GdipCreateFromHDC(tmp_dc, &mut mg) } == GDI_PLUS_OK {
-        // Fill black, draw white text, then scan for white pixels
-        let black: u32 = 0xFF_000000u32;
-        let white: u32 = 0xFF_FFFFFFu32;
-        let mut bb: GpBrush = std::ptr::null_mut();
-        let mut wb: GpBrush = std::ptr::null_mut();
-        unsafe {
-            GdipCreateSolidFill(black, &mut bb);
-            GdipCreateSolidFill(white, &mut wb);
-            GdipFillRectangleI(mg, bb, 0, 0, measure_w, measure_h);
-        }
-
-        let measure_rect = RectF {
+        // Use GDI+ measurement APIs instead of pixel scanning. This
+        // provides reliable font metrics (including ascent/descent/bearing)
+        // and avoids raster-based inaccuracies across DPIs.
+        let layout_rect = RectF {
             x: 0.0,
             y: 0.0,
             width: measure_w as f32,
             height: measure_h as f32,
         };
-        unsafe {
-            GdipDrawString(
+        let mut bounding = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let mut codepoints_fitted: i32 = 0;
+        let mut lines_filled: i32 = 0;
+        let status = unsafe {
+            GdipMeasureString(
                 mg,
                 display_wide.as_ptr(),
                 -1,
                 gp_font,
-                &measure_rect,
+                &layout_rect,
                 gp_sf,
-                wb,
-            );
-        }
-
-        // Scan for non-black pixels to find bounding box
-        let bits = unsafe {
-            std::slice::from_raw_parts(tmp_bits as *const u8, (measure_w * measure_h * 4) as usize)
+                &mut bounding as *mut RectF,
+                &mut codepoints_fitted as *mut i32,
+                &mut lines_filled as *mut i32,
+            )
         };
-        let mut min_x = measure_w;
-        let mut max_x = 0i32;
-        let mut min_y = measure_h;
-        let mut max_y = 0i32;
-        for py in 0..measure_h {
-            for px in 0..measure_w {
-                let idx = ((py * measure_w + px) * 4) as usize;
-                // Check if pixel is non-black (BGRA: any of B,G,R > 0)
-                if bits[idx] != 0 || bits[idx + 1] != 0 || bits[idx + 2] != 0 {
-                    if px < min_x {
-                        min_x = px;
-                    }
-                    if px > max_x {
-                        max_x = px;
-                    }
-                    if py < min_y {
-                        min_y = py;
-                    }
-                    if py > max_y {
-                        max_y = py;
-                    }
-                }
-            }
-        }
 
-        if max_x >= min_x && max_y >= min_y {
-            // Add extra width to avoid clipping antialiased glyph edges
-            const WIDTH_PAD: i32 = 10;
-            text_w = max_x - min_x + 1 + WIDTH_PAD;
-            text_h = max_y - min_y + 1;
+        if status == GDI_PLUS_OK && bounding.width > 0.0 && bounding.height > 0.0 {
+            // Convert measured floating size to integer pixels and add
+            // a small padding to account for antialiasing and glyph overhangs.
+            const WIDTH_PAD: i32 = 4;
+            const HEIGHT_PAD: i32 = 2;
+            text_w = bounding.width.ceil() as i32 + WIDTH_PAD;
+            text_h = bounding.height.ceil() as i32 + HEIGHT_PAD;
         } else {
             // Fallback — target window size 180×64 with PAD_X=6, PAD_Y=6
             text_w = 168;
-            text_h = 52;
-        }
-
-        // Use GDI+ font height as floor — pixel scan may miss antialiased edges.
-        let mut gp_font_h: f32 = 0.0;
-        if unsafe { GdipGetFontHeight(gp_font, mg, &mut gp_font_h) } == GDI_PLUS_OK {
-            let fh = gp_font_h.ceil() as i32;
-            if fh > text_h {
-                text_h = fh;
-            }
+            text_h = 54;
         }
 
         unsafe {
-            GdipDeleteBrush(bb);
-            GdipDeleteBrush(wb);
             GdipDeleteGraphics(mg);
         }
     } else {
@@ -1279,7 +1207,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         shown_at: None,
         width: win_w,
         height: win_h,
-        text_h,
+        text_y_correction,
         mem_dc: RawPtr::from_ptr(mem_dc),
         bitmap: RawPtr::from_ptr(bitmap),
         bitmap_bits: RawPtr::from_ptr(bitmap_bits),
@@ -1292,13 +1220,13 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
     };
 
     GUI_STATE.set(Mutex::new(Some(state))).ok();
-    GUI_HWND_STATIC.store(hwnd as i32, Ordering::Relaxed);
+    GUI_HWND_STATIC.store(hwnd as isize, Ordering::Relaxed);
 
     Ok(())
 }
 
 pub fn get_hwnd() -> HWND {
-    GUI_HWND_STATIC.load(Ordering::Relaxed) as HWND
+    GUI_HWND_STATIC.load(Ordering::Relaxed) as *mut std::ffi::c_void
 }
 
 pub fn is_visible() -> bool {

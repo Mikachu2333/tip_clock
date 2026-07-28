@@ -158,7 +158,7 @@ const CONFIG_TEMPLATE_ZH: &str = r#"# ──────────────
 # 开机自启 (Windows 启动时自动运行)
 auto_start = {auto_start}
 
-# 背景颜色 RGB (0-255), 透明度 (0-100)
+# 背景颜色 RGB (0-255), 透明度 (0-100, 0=全透明)
 bg_r = {bg_r}
 bg_g = {bg_g}
 bg_b = {bg_b}
@@ -214,7 +214,7 @@ const CONFIG_TEMPLATE_EN: &str = r#"# ──────────────
 # Auto-start with Windows
 auto_start = {auto_start}
 
-# Background color RGB (0-255), opacity (0-100)
+# Background color RGB (0-255), opacity (0-100, 0=fully transparent)
 bg_r = {bg_r}
 bg_g = {bg_g}
 bg_b = {bg_b}
@@ -575,8 +575,8 @@ fn auto_quote_bare_times(raw: &str) -> String {
 
 /// Write back the config using the template with current values
 impl Config {
-    #[allow(dead_code)]
     pub fn save_to_file(&self) -> Result<(), String> {
+        // Build the [general] section from the template to preserve comments.
         let content = config_template()
             .replace("{auto_start}", &self.general.auto_start.to_string())
             .replace("{bg_r}", &self.general.bg_r.to_string())
@@ -593,10 +593,27 @@ impl Config {
             .replace("{window_x}", &self.general.window_x.to_string())
             .replace("{window_y}", &self.general.window_y.to_string());
 
-        // Note: schedule entries use template defaults; user's custom schedule entries
-        // are not preserved by this simple template approach. For full preservation,
-        // the user should edit config.toml directly.
-        std::fs::write(&self.config_path, content)
+        // Keep only the [general] section header and everything above the first
+        // [[schedule]] line.  Then append the *actual* schedule entries so that
+        // user-added / user-modified times are preserved across saves.
+        let general_section = content
+            .split_once("[[schedule]]")
+            .map(|(head, _)| head)
+            .unwrap_or(&content);
+
+        let mut out = general_section.trim_end().to_string();
+        out.push_str("\n\n");
+        for entry in &self.schedule {
+            out.push_str("[[schedule]]\n");
+            out.push_str(&format!("time = \"{}\"\n", entry.time));
+            out.push_str(&format!("ring = \"{}\"\n", entry.ring.display_name()));
+            if let Some(ref cf) = entry.custom_file {
+                out.push_str(&format!("custom_file = \"{}\"\n", cf));
+            }
+            out.push('\n');
+        }
+
+        std::fs::write(&self.config_path, out)
             .map_err(|e| format!("Failed to write config: {e}"))?;
         Ok(())
     }
