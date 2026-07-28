@@ -183,7 +183,7 @@ audio = "demo"
 
 [[schedule]]
 # 静音提醒：省略 audio
-time = "12:00:00"
+time = "13:42:57"
 "#;
 
 /// Template for auto-creating config with comments — English
@@ -234,7 +234,7 @@ audio = "demo"
 
 [[schedule]]
 # Silent reminder: omit audio
-time = "12:00:00"
+time = "13:42:57"
 "#;
 
 /// Select the appropriate config template based on system language

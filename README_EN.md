@@ -100,7 +100,7 @@ audio = "demo"
 
 # Silent reminder: omit audio
 [[schedule]]
-time = "12:00:00"
+time = "13:42:57"
 ```
 
 ### Audio Configuration
