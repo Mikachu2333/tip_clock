@@ -196,6 +196,15 @@ ring = "end"
 [[schedule]]
 time = "09:40:00"
 ring = "special"
+
+[[schedule]]
+time = "10:00:00"
+ring = "none"
+
+[[schedule]]
+time = "10:45:00"
+# 自定义提示音, 需在同目录下放置 aaabbb.wav 文件，仅支持 wav
+ring = "aaabbb"
 "#;
 
 /// Template for auto-creating config with comments — English
@@ -252,6 +261,15 @@ ring = "end"
 [[schedule]]
 time = "09:40:00"
 ring = "special"
+
+[[schedule]]
+time = "10:00:00"
+ring = "none"
+
+[[schedule]]
+time = "10:45:00"
+# custom ring, requires aaabbb.wav in the same folder (only wav supported)
+ring = "aaabbb"
 "#;
 
 /// Select the appropriate config template based on system language

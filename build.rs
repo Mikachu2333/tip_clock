@@ -1,28 +1,42 @@
 fn main() {
-    // Read raw 256×256 RGBA icon data
+    // Only embed resources on Windows targets.
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "windows" {
+        return;
+    }
+
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
+    // ── Generate .ico from raw 256×256 RGBA data ──────────
     let raw = include_bytes!("res/ico_raw");
     assert_eq!(
         raw.len(),
         256 * 256 * 4,
         "ico_raw must be exactly 256×256 RGBA (262144 bytes)"
     );
-
-    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-
-    // ── Generate .ico (BMP-based, 32-bit BGRA) ────────────
     let ico_path = out_dir.join("icon.ico");
     let ico_data = rgba_to_ico(raw, 256, 256);
     std::fs::write(&ico_path, &ico_data).expect("failed to write icon.ico");
 
-    // ── Generate .rc referencing the generated .ico ───────
-    let rc_path = out_dir.join("resource.rc");
-    // RC file uses C-string escaping; forward slashes are fine, backslashes need doubling
-    let ico_str = ico_path.to_string_lossy().replace('\\', "\\\\");
-    let rc_content = format!("MAINICON ICON \"{ico_str}\"\n");
-    std::fs::write(&rc_path, &rc_content).expect("failed to write resource.rc");
+    // ── Build Windows resource via winresource ────────────
+    let mut res = winresource::WindowsResource::new();
 
-    // ── Compile and embed ──────────────────────────────────
-    embed_resource::compile(&rc_path, embed_resource::NONE);
+    // Icon
+    res.set_icon(ico_path.to_str().unwrap());
+
+    // Version info — FileVersion / ProductVersion are read from
+    // Cargo.toml `package.version` automatically.  We only need
+    // to set the string fields that Cargo does not provide.
+    res.set("CompanyName", "Mikachu2333");
+    res.set("FileDescription", "Auto Tip Clock - Desktop Reminder");
+    res.set("InternalName", "tip_clock");
+    res.set("OriginalFilename", "tip_clock.exe");
+    res.set("ProductName", "Tip Clock");
+    res.set("LegalCopyright", "Copyright (c) 2026 Mikachu2333");
+
+    // Language: 0x0409 = English (US), 1200 = CP_UTF16
+    res.set_language(0x0409);
+
+    res.compile().expect("failed to compile Windows resource");
 }
 
 /// Convert raw RGBA pixel data to a BMP-based ICO file.
