@@ -58,37 +58,35 @@ pub struct GeneralConfig {
     pub volume: u8,         // 0-100
     pub hotkey_mod: String, // e.g., "ctrl+alt"
     pub hotkey_key: String, // e.g., "T"
-    #[serde(default = "default_font_name")]
-    pub font_name: String,
-    #[serde(default = "default_font_size")]
-    pub font_size: i32,
-}
-
-fn default_font_name() -> String {
-    "微软雅黑".into()
-}
-fn default_font_size() -> i32 {
-    16
 }
 
 impl Default for GeneralConfig {
     fn default() -> Self {
         GeneralConfig {
             auto_start: false,
-            bg_r: 0,
-            bg_g: 0,
-            bg_b: 0,
-            bg_opacity: 80,
-            text_r: 255,
-            text_g: 255,
-            text_b: 255,
+            bg_r: 255,
+            bg_g: 255,
+            bg_b: 255,
+            bg_opacity: 0,
+            text_r: 0,
+            text_g: 0,
+            text_b: 0,
             display_time: 5,
             volume: 80,
-            hotkey_mod: "ctrl+alt".into(),
-            hotkey_key: "T".into(),
-            font_name: default_font_name(),
-            font_size: default_font_size(),
+            hotkey_mod: "Win+Alt".into(),
+            hotkey_key: "B".into(),
         }
+    }
+}
+
+impl GeneralConfig {
+    /// Clamp all user-editable values to valid ranges (repair broken config files).
+    /// Note: u8 fields (bg_r/g/b, text_r/g/b) are validated by serde itself —
+    /// values > 255 cause a parse error, so no explicit clamp is needed.
+    pub fn clamp(&mut self) {
+        self.bg_opacity = self.bg_opacity.min(100);
+        self.display_time = self.display_time.clamp(1, 60);
+        self.volume = self.volume.min(100);
     }
 }
 
@@ -149,16 +147,10 @@ bg_g = {bg_g}
 bg_b = {bg_b}
 bg_opacity = {bg_opacity}
 
-# ▸▸▸ 以下字体设置请通过托盘菜单修改，不要手动编辑 ▸▸▸
 # 文字颜色 RGB (0-255)
 text_r = {text_r}
 text_g = {text_g}
 text_b = {text_b}
-# 字体名称 (通过 "字体..." 菜单选择)
-font_name = "{font_name}"
-# 字体大小
-font_size = {font_size}
-# ◂◂◂ 以上字体设置请通过托盘菜单修改，不要手动编辑 ◂◂◂
 
 # 临时显示时间, 秒 (1-60)
 display_time = {display_time}
@@ -207,16 +199,10 @@ bg_g = {bg_g}
 bg_b = {bg_b}
 bg_opacity = {bg_opacity}
 
-# ▸▸▸ Font settings below — use tray menu, do NOT edit by hand ▸▸▸
 # Text color RGB (0-255)
 text_r = {text_r}
 text_g = {text_g}
 text_b = {text_b}
-# Font name (set via "Font..." tray menu)
-font_name = "{font_name}"
-# Font size
-font_size = {font_size}
-# ◂◂◂ Font settings above — use tray menu, do NOT edit by hand ◂◂◂
 
 # Display duration in seconds (1-60)
 display_time = {display_time}
@@ -281,7 +267,8 @@ impl Config {
         let config_path = exe_dir.join("config.toml");
 
         if config_path.exists() {
-            let (cfg, _source) = Self::load_and_merge(&config_path)?;
+            let (mut cfg, _source) = Self::load_and_merge(&config_path)?;
+            cfg.general.clamp();
             let entries = Config::build_entries(&cfg.schedule, cfg.general.volume);
             Ok(Config {
                 general: cfg.general,
@@ -302,8 +289,6 @@ impl Config {
                 .replace("{text_r}", &default.text_r.to_string())
                 .replace("{text_g}", &default.text_g.to_string())
                 .replace("{text_b}", &default.text_b.to_string())
-                .replace("{font_name}", &default.font_name)
-                .replace("{font_size}", &default.font_size.to_string())
                 .replace("{display_time}", &default.display_time.to_string())
                 .replace("{volume}", &default.volume.to_string())
                 .replace("{hotkey_mod}", &default.hotkey_mod)
@@ -578,8 +563,6 @@ impl Config {
             .replace("{text_r}", &self.general.text_r.to_string())
             .replace("{text_g}", &self.general.text_g.to_string())
             .replace("{text_b}", &self.general.text_b.to_string())
-            .replace("{font_name}", &self.general.font_name)
-            .replace("{font_size}", &self.general.font_size.to_string())
             .replace("{display_time}", &self.general.display_time.to_string())
             .replace("{volume}", &self.general.volume.to_string())
             .replace("{hotkey_mod}", &self.general.hotkey_mod)

@@ -6,7 +6,112 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 // ───────────────────────────────────────────────
-//  Win32 FFI declarations
+//  GDI+ types & constants
+// ───────────────────────────────────────────────
+
+type GpGraphics = *mut std::ffi::c_void;
+type GpBrush = *mut std::ffi::c_void;
+type GpFontFamily = *mut std::ffi::c_void;
+type GpFont = *mut std::ffi::c_void;
+type GpStringFormat = *mut std::ffi::c_void;
+#[allow(non_camel_case_types)]
+type ULONG_PTR = usize;
+
+const GDI_PLUS_OK: i32 = 0;
+const FONT_STYLE_REGULAR: i32 = 0;
+const UNIT_POINT: i32 = 3; // 1/72 inch
+const STRING_ALIGN_CENTER: i32 = 1;
+const TEXT_RENDERING_HINT_ANTIALIAS: i32 = 4;
+const SMOOTHING_MODE_HIGH_QUALITY: i32 = 2;
+
+#[repr(C)]
+struct GdiplusStartupInputStruct {
+    gdiplus_version: u32,
+    debug_event_callback: *mut std::ffi::c_void,
+    suppress_background_thread: i32,
+    suppress_external_codecs: i32,
+}
+
+impl Default for GdiplusStartupInputStruct {
+    fn default() -> Self {
+        GdiplusStartupInputStruct {
+            gdiplus_version: 1,
+            debug_event_callback: std::ptr::null_mut(),
+            suppress_background_thread: 0,
+            suppress_external_codecs: 0,
+        }
+    }
+}
+
+#[repr(C)]
+struct RectF {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+// ───────────────────────────────────────────────
+//  GDI+ FFI (gdiplus.dll)
+// ───────────────────────────────────────────────
+
+#[link(name = "gdiplus")]
+unsafe extern "system" {
+    fn GdiplusStartup(
+        token: *mut ULONG_PTR,
+        input: *const GdiplusStartupInputStruct,
+        output: *mut std::ffi::c_void,
+    ) -> i32;
+    fn GdiplusShutdown(token: ULONG_PTR);
+    fn GdipCreateFromHDC(hdc: HDC, graphics: *mut GpGraphics) -> i32;
+    fn GdipDeleteGraphics(graphics: GpGraphics) -> i32;
+    fn GdipCreateSolidFill(color: u32, brush: *mut GpBrush) -> i32;
+    fn GdipDeleteBrush(brush: GpBrush) -> i32;
+    fn GdipFillRectangleI(
+        graphics: GpGraphics,
+        brush: GpBrush,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
+    fn GdipCreateFontFamilyFromName(
+        name: *const u16,
+        font_collection: *mut std::ffi::c_void,
+        font_family: *mut GpFontFamily,
+    ) -> i32;
+    fn GdipDeleteFontFamily(font_family: GpFontFamily) -> i32;
+    fn GdipCreateFont(
+        font_family: GpFontFamily,
+        em_size: f32,
+        style: i32,
+        unit: i32,
+        font: *mut GpFont,
+    ) -> i32;
+    fn GdipDeleteFont(font: GpFont) -> i32;
+    fn GdipCreateStringFormat(
+        format_attributes: i32,
+        language: u16,
+        format: *mut GpStringFormat,
+    ) -> i32;
+    fn GdipDeleteStringFormat(format: GpStringFormat) -> i32;
+    fn GdipSetStringFormatAlign(format: GpStringFormat, align: i32) -> i32;
+    fn GdipSetStringFormatLineAlign(format: GpStringFormat, align: i32) -> i32;
+    fn GdipDrawString(
+        graphics: GpGraphics,
+        string: *const u16,
+        length: i32,
+        font: GpFont,
+        layout_rect: *const RectF,
+        string_format: GpStringFormat,
+        brush: GpBrush,
+    ) -> i32;
+    fn GdipSetTextRenderingHint(graphics: GpGraphics, mode: i32) -> i32;
+    fn GdipSetSmoothingMode(graphics: GpGraphics, mode: i32) -> i32;
+}
+
+// ───────────────────────────────────────────────
+//  Win32 types & constants (window management)
 // ───────────────────────────────────────────────
 
 type HINSTANCE = *mut std::ffi::c_void;
@@ -14,7 +119,6 @@ type HWND = *mut std::ffi::c_void;
 type HDC = *mut std::ffi::c_void;
 type HGDIOBJ = *mut std::ffi::c_void;
 type HBRUSH = *mut std::ffi::c_void;
-type HFONT = *mut std::ffi::c_void;
 type HBITMAP = *mut std::ffi::c_void;
 type LPARAM = isize;
 type WPARAM = usize;
@@ -35,6 +139,7 @@ const BI_RGB: u32 = 0;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
 
+#[allow(dead_code)]
 const SWP_NOSIZE: u32 = 0x0001;
 #[allow(dead_code)]
 const SWP_NOMOVE: u32 = 0x0002;
@@ -43,10 +148,8 @@ const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_SHOWWINDOW: u32 = 0x0040;
 const SW_HIDE: i32 = 0;
 
-const TRANSPARENT: i32 = 1;
-
 const WM_HOTKEY: u32 = 0x0312;
-const WM_USER_HOTKEY: u32 = 0x0401; // custom: posted by keyboard hook in hotkey.rs
+const WM_USER_HOTKEY: u32 = 0x0401;
 const WM_NULL: u32 = 0x0000;
 const WM_TIMER: u32 = 0x0113;
 const WM_LBUTTONDOWN: u32 = 0x0201;
@@ -54,26 +157,25 @@ const WM_RBUTTONUP: u32 = 0x0205;
 const WM_COMMAND: u32 = 0x0111;
 const WM_DESTROY: u32 = 0x0002;
 const WM_CLOSE: u32 = 0x0010;
+const WM_SETCURSOR: u32 = 0x0020;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;
 const HTCAPTION: isize = 2;
 
-// Popup menu flags
+const IDC_ARROW: *const u16 = 32512usize as *const u16;
+
+const LOGPIXELSY: i32 = 90; // pixels per logical inch (vertical DPI)
+
 const MF_STRING: u32 = 0x0000_0000;
 const MF_SEPARATOR: u32 = 0x0000_0800;
 const TPM_RIGHTBUTTON: u32 = 0x0000_0002;
 const TPM_NONOTIFY: u32 = 0x0000_0080;
 
-// Menu command IDs
 const IDM_HIDE_CLOCK: usize = 1001;
 const IDM_EXIT: usize = 1002;
 
-const FW_NORMAL: i32 = 400;
-const DEFAULT_CHARSET: u8 = 1;
-const OUT_DEFAULT_PRECIS: u8 = 0;
-const CLIP_DEFAULT_PRECIS: u8 = 0;
-const DEFAULT_QUALITY: u8 = 0;
-const DEFAULT_PITCH: u32 = 0;
-const FF_DONTCARE: u32 = 0;
+// ───────────────────────────────────────────────
+//  Win32 structures
+// ───────────────────────────────────────────────
 
 #[repr(C)]
 struct POINT {
@@ -119,6 +221,10 @@ struct WNDCLASSEXW {
     lpsz_class_name: *const u16,
     h_icon_sm: HINSTANCE,
 }
+
+// ───────────────────────────────────────────────
+//  Win32 FFI
+// ───────────────────────────────────────────────
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -175,6 +281,9 @@ unsafe extern "system" {
         uFlags: u32,
     ) -> i32;
     fn GetSystemMetrics(nIndex: i32) -> i32;
+    fn GetDeviceCaps(hdc: HDC, index: i32) -> i32;
+    fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: *const u16) -> HINSTANCE;
+    fn SetCursor(hCursor: HINSTANCE) -> HINSTANCE;
     fn SetTimer(
         hWnd: HWND,
         nIDEvent: usize,
@@ -182,26 +291,6 @@ unsafe extern "system" {
         lpTimerFunc: *mut std::ffi::c_void,
     ) -> usize;
     fn KillTimer(hWnd: HWND, uIDEvent: usize) -> i32;
-    fn CreateFontW(
-        nHeight: i32,
-        nWidth: i32,
-        nEscapement: i32,
-        nOrientation: i32,
-        fnWeight: i32,
-        fdwItalic: u32,
-        fdwUnderline: u32,
-        fdwStrikeOut: u32,
-        fdwCharSet: u32,
-        fdwOutputPrecision: u32,
-        fdwClipPrecision: u32,
-        fdwQuality: u32,
-        fdwPitchAndFamily: u32,
-        lpszFace: *const u16,
-    ) -> HFONT;
-    fn TextOutW(hdc: HDC, x: i32, y: i32, lpString: *const u16, c: i32) -> i32;
-    fn GetTextExtentPoint32W(hdc: HDC, lpString: *const u16, c: i32, lpSizel: *mut i32) -> i32;
-    fn SetTextColor(hdc: HDC, color: u32) -> u32;
-    fn SetBkMode(hdc: HDC, mode: i32) -> i32;
     fn SendMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
     fn ReleaseCapture() -> i32;
     fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> i32;
@@ -246,9 +335,6 @@ impl RawPtr {
     fn from_ptr<T>(p: *mut T) -> Self {
         RawPtr(p as isize)
     }
-    fn as_ptr<T>(&self) -> *mut T {
-        self.0 as *mut T
-    }
     fn as_hwnd(&self) -> HWND {
         self.0 as HWND
     }
@@ -257,6 +343,25 @@ impl RawPtr {
     }
     fn as_hgdiobj(&self) -> HGDIOBJ {
         self.0 as HGDIOBJ
+    }
+}
+
+/// GDI+ object wrapper — all GDI+ objects are thread-safe when used on the
+/// main thread exclusively (which we guarantee).
+#[derive(Debug, Clone, Copy)]
+struct GpObj(isize);
+unsafe impl Send for GpObj {}
+unsafe impl Sync for GpObj {}
+
+impl GpObj {
+    fn gp_font_family(&self) -> GpFontFamily {
+        self.0 as GpFontFamily
+    }
+    fn gp_font(&self) -> GpFont {
+        self.0 as GpFont
+    }
+    fn gp_string_format(&self) -> GpStringFormat {
+        self.0 as GpStringFormat
     }
 }
 
@@ -274,16 +379,51 @@ fn debug_log(s: &str) {
     }
 }
 
+fn get_system_dpi() -> f32 {
+    unsafe {
+        let screen_dc = GetDC(std::ptr::null_mut());
+        let dpi = GetDeviceCaps(screen_dc, LOGPIXELSY) as f32;
+        ReleaseDC(std::ptr::null_mut(), screen_dc);
+        dpi
+    }
+}
+
+// ───────────────────────────────────────────────
+//  GDI+ one-time initialisation
+// ───────────────────────────────────────────────
+
+static GDI_PLUS_TOKEN: OnceLock<ULONG_PTR> = OnceLock::new();
+
+fn gdiplus_init() -> Result<(), String> {
+    let input = GdiplusStartupInputStruct::default();
+    let mut token: ULONG_PTR = 0;
+    let status = unsafe { GdiplusStartup(&mut token, &input, std::ptr::null_mut()) };
+    if status != GDI_PLUS_OK {
+        return Err(format!("GdiplusStartup failed (status={status})"));
+    }
+    GDI_PLUS_TOKEN.set(token).ok();
+    Ok(())
+}
+
+fn gdiplus_shutdown() {
+    if let Some(token) = GDI_PLUS_TOKEN.get() {
+        unsafe { GdiplusShutdown(*token) };
+    }
+}
+
+// Hardcoded font parameters — no longer read from config.
+const FONT_NAME: &str = "Microsoft YaHei UI";
+const FONT_SIZE_PT: f32 = 18.0;
+const DISPLAY_STR: &str = "88:88:88";
+const PAD_X: i32 = 6;
+const PAD_Y: i32 = 6;
+
 // ───────────────────────────────────────────────
 //  Clock window state
 // ───────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct ClockWindowConfig {
-    #[allow(dead_code)]
-    pub font_name: String,
-    #[allow(dead_code)]
-    pub font_size: i32,
     pub bg_color: (u8, u8, u8, u8), // r, g, b, opacity(0-100)
     pub text_color: (u8, u8, u8),
     pub display_time: u32,
@@ -295,11 +435,14 @@ struct GuiState {
     shown_at: Option<std::time::Instant>,
     width: i32,
     height: i32,
-    // Bitmap resources
+    // GDI objects
     mem_dc: RawPtr,
     bitmap: RawPtr,
-    bitmap_bits: RawPtr, // *mut u8
-    font: RawPtr,
+    bitmap_bits: RawPtr,
+    // GDI+ objects
+    gp_font_family: GpObj,
+    gp_font: GpObj,
+    gp_string_format: GpObj,
     last_time_str: String,
     timer_update_id: usize,
 }
@@ -322,10 +465,8 @@ unsafe extern "system" fn clock_wndproc(
         WM_HOTKEY | WM_USER_HOTKEY => {
             debug_log("[gui] WM_HOTKEY / WM_USER_HOTKEY received\n");
             if is_visible() {
-                debug_log("[gui] hiding clock\n");
                 hide_clock();
             } else {
-                debug_log("[gui] showing clock\n");
                 show_clock();
             }
             return 0;
@@ -363,8 +504,11 @@ unsafe extern "system" fn clock_wndproc(
 
         WM_LBUTTONDOWN => {
             unsafe {
+                let mut pt = POINT { x: 0, y: 0 };
+                GetCursorPos(&mut pt);
                 ReleaseCapture();
-                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
+                let lparam = ((pt.y as u32) << 16) as isize | ((pt.x as u32) & 0xFFFF) as isize;
+                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, lparam);
             }
             if let Some(state_lock) = GUI_STATE.get() {
                 let mut state_opt = state_lock.lock().unwrap();
@@ -376,9 +520,8 @@ unsafe extern "system" fn clock_wndproc(
         }
 
         WM_RBUTTONUP => {
-            // Show a popup context menu on the clock window
             unsafe {
-                show_clock_context_menu(hwnd, lparam);
+                show_clock_context_menu(hwnd);
             }
             return 0;
         }
@@ -397,13 +540,22 @@ unsafe extern "system" fn clock_wndproc(
             return 0;
         }
 
+        WM_SETCURSOR => {
+            unsafe {
+                let arrow = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+                if !arrow.is_null() {
+                    SetCursor(arrow);
+                }
+            }
+            return 1;
+        }
+
         _ => {}
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
-/// Show a right-click popup menu on the clock window.
-unsafe fn show_clock_context_menu(hwnd: HWND, _lparam: LPARAM) {
+unsafe fn show_clock_context_menu(hwnd: HWND) {
     debug_log("[gui] right-click context menu shown\n");
     unsafe {
         let menu = CreatePopupMenu();
@@ -411,24 +563,19 @@ unsafe fn show_clock_context_menu(hwnd: HWND, _lparam: LPARAM) {
             return;
         }
 
-        // "Hide Clock" item
-        let hide_text = crate::i18n::tr(crate::i18n::TrKey::ShowClock); // reuse key
+        let hide_text = crate::i18n::tr(crate::i18n::TrKey::ShowClock);
         let hide_wide: Vec<u16> = hide_text.encode_utf16().chain(std::iter::once(0)).collect();
         AppendMenuW(menu, MF_STRING, IDM_HIDE_CLOCK, hide_wide.as_ptr());
 
-        // Separator
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
 
-        // "Exit" item
         let exit_text = crate::i18n::tr(crate::i18n::TrKey::Exit);
         let exit_wide: Vec<u16> = exit_text.encode_utf16().chain(std::iter::once(0)).collect();
         AppendMenuW(menu, MF_STRING, IDM_EXIT, exit_wide.as_ptr());
 
-        // Get cursor position
         let mut pt = POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
 
-        // Must set foreground window so the menu dismisses properly
         SetForegroundWindow(hwnd);
 
         TrackPopupMenu(
@@ -441,88 +588,81 @@ unsafe fn show_clock_context_menu(hwnd: HWND, _lparam: LPARAM) {
             std::ptr::null(),
         );
 
-        // Post a dummy message to make the menu dismiss on next click
         PostMessageW(hwnd, WM_NULL, 0, 0);
-
         DestroyMenu(menu);
     }
 }
 
 // ───────────────────────────────────────────────
-//  Redraw
+//  Redraw with GDI+ (proper alpha, zero hacks)
 // ───────────────────────────────────────────────
 
 unsafe fn redraw_layered_window(state: &mut GuiState) {
     unsafe {
-        let w = state.width as isize;
-        let h = state.height as isize;
+        let w = state.width;
+        let h = state.height;
         let hdc = state.mem_dc.as_hdc();
-        let bits_ptr = state.bitmap_bits.as_ptr::<u8>();
 
-        let (br, bg, bb, alpha_pct) = state.config.bg_color;
-        let alpha = ((alpha_pct as f32 / 100.0) * 255.0) as u8;
-
-        // Fill background (BGRA)
+        // Zero the DIB so fully-transparent areas don't contain stale data.
         {
-            let bits = std::slice::from_raw_parts_mut(bits_ptr, (w * h * 4) as usize);
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = ((y * w + x) * 4) as usize;
-                    bits[idx] = bg;
-                    bits[idx + 1] = br;
-                    bits[idx + 2] = bb;
-                    bits[idx + 3] = alpha;
-                }
-            }
+            let bits = std::slice::from_raw_parts_mut(
+                state.bitmap_bits.0 as *mut u8,
+                (w * h * 4) as usize,
+            );
+            bits.fill(0);
         }
 
-        // Draw text
-        let old_font = SelectObject(hdc, state.font.as_hgdiobj());
+        let (r, g, b, opacity_pct) = state.config.bg_color;
+        let alpha = ((opacity_pct as f32 / 100.0) * 255.0) as u8;
         let (tr, tg, tb) = state.config.text_color;
-        let text_rgb: u32 = (tr as u32) | ((tg as u32) << 8) | ((tb as u32) << 16);
-        SetTextColor(hdc, text_rgb);
-        SetBkMode(hdc, TRANSPARENT);
 
-        let time_wide = to_wide(&state.last_time_str);
-        let mut extent = [0i32; 2];
-        GetTextExtentPoint32W(
-            hdc,
-            time_wide.as_ptr(),
-            (time_wide.len() - 1) as i32,
-            extent.as_mut_ptr(),
-        );
-        let text_w = extent[0];
-        let text_h = extent[1];
-
-        let x = (w - text_w as isize) / 2;
-        let y = (h - text_h as isize) / 2;
-        TextOutW(
-            hdc,
-            x as i32,
-            y as i32,
-            time_wide.as_ptr(),
-            (time_wide.len() - 1) as i32,
-        );
-
-        SelectObject(hdc, old_font);
-
-        // Post-process: set alpha=255 for text pixels
-        {
-            let bits = std::slice::from_raw_parts_mut(bits_ptr, (w * h * 4) as usize);
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = ((y * w + x) * 4) as usize;
-                    let b = bits[idx];
-                    let g = bits[idx + 1];
-                    let r = bits[idx + 2];
-                    if b != bg || g != br || r != bb {
-                        bits[idx + 3] = 255;
-                    }
-                }
-            }
+        // Create GDI+ Graphics from our memory DC
+        let mut graphics: GpGraphics = std::ptr::null_mut();
+        if GdipCreateFromHDC(hdc, &mut graphics) != GDI_PLUS_OK {
+            return;
         }
 
-        // Update
+        // Quality settings
+        GdipSetTextRenderingHint(graphics, TEXT_RENDERING_HINT_ANTIALIAS);
+        GdipSetSmoothingMode(graphics, SMOOTHING_MODE_HIGH_QUALITY);
+
+        // ── Background fill ─────────────────────
+        // GDI+ ARGB = 0xAARRGGBB
+        let bg_argb: u32 =
+            ((alpha as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+        let mut bg_brush: GpBrush = std::ptr::null_mut();
+        if GdipCreateSolidFill(bg_argb, &mut bg_brush) == GDI_PLUS_OK {
+            GdipFillRectangleI(graphics, bg_brush, 0, 0, w, h);
+            GdipDeleteBrush(bg_brush);
+        }
+
+        // ── Text ────────────────────────────────
+        let text_argb: u32 =
+            (0xFF_000000u32) | ((tr as u32) << 16) | ((tg as u32) << 8) | (tb as u32);
+        let mut text_brush: GpBrush = std::ptr::null_mut();
+        if GdipCreateSolidFill(text_argb, &mut text_brush) == GDI_PLUS_OK {
+            let text_wide = to_wide(&state.last_time_str);
+            let layout_rect = RectF {
+                x: 0.0,
+                y: 0.0,
+                width: w as f32,
+                height: h as f32,
+            };
+            GdipDrawString(
+                graphics,
+                text_wide.as_ptr(),
+                -1,
+                state.gp_font.gp_font(),
+                &layout_rect,
+                state.gp_string_format.gp_string_format(),
+                text_brush,
+            );
+            GdipDeleteBrush(text_brush);
+        }
+
+        GdipDeleteGraphics(graphics);
+
+        // ── Display via UpdateLayeredWindow ──────
         let blend = BLENDFUNCTION {
             blend_op: 0,
             blend_flags: 0,
@@ -530,7 +670,7 @@ unsafe fn redraw_layered_window(state: &mut GuiState) {
             alpha_format: AC_SRC_ALPHA,
         };
         let pt_src = POINT { x: 0, y: 0 };
-        let size = [state.width, state.height];
+        let size = [w, h];
         let screen_dc = GetDC(std::ptr::null_mut());
         UpdateLayeredWindow(
             state.hwnd.as_hwnd(),
@@ -601,22 +741,18 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
         let x = (sw - state.width) / 2;
         let y = sh / 6;
 
-        // Render the current time before showing
         let now = Local::now();
         state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
         redraw_layered_window(state);
 
-        // Show at final position (no slide animation — AnimateWindow is incompatible
-        // with WS_EX_LAYERED. A manual slide would require a timer-driven position
-        // loop, which adds complexity for marginal UX gain.)
         SetWindowPos(
             hwnd,
-            (-1isize) as HWND, // HWND_TOPMOST
+            (-1isize) as HWND,
             x,
             y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            state.width,
+            state.height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
 
         GUI_VISIBLE.store(true, Ordering::Relaxed);
@@ -636,6 +772,9 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
 // ───────────────────────────────────────────────
 
 pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
+    // One-time GDI+ initialisation
+    gdiplus_init()?;
+
     let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
     if hinst.is_null() {
         return Err("获取模块句柄失败".into());
@@ -652,7 +791,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         cb_wnd_extra: 0,
         h_instance: hinst,
         h_icon: std::ptr::null_mut(),
-        h_cursor: std::ptr::null_mut(),
+        h_cursor: unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) },
         hbr_background: std::ptr::null_mut(),
         lpsz_menu_name: std::ptr::null(),
         lpsz_class_name: class_name.as_ptr(),
@@ -664,58 +803,188 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         return Err("注册窗口类失败".into());
     }
 
-    // Measure text using font from config
-    let font_size = -cfg.font_size; // negative = logical point size for CreateFontW
-    let font_name = cfg.font_name.as_str();
-    let display_str = "00:00:00";
+    // ── Measure text extent for window size ─────
 
-    let hdc = unsafe { GetDC(std::ptr::null_mut()) };
-    let font_wide = to_wide(font_name);
-    let font = unsafe {
-        CreateFontW(
-            font_size,
+    let system_dpi = get_system_dpi();
+    let scaled_font_size = FONT_SIZE_PT * (system_dpi / 96.0);
+
+    // Create a temporary GDI+ Graphics from a screen DC for measurement.
+    let screen_dc = unsafe { GetDC(std::ptr::null_mut()) };
+    let mut tmp_graphics: GpGraphics = std::ptr::null_mut();
+    if unsafe { GdipCreateFromHDC(screen_dc, &mut tmp_graphics) } != GDI_PLUS_OK {
+        unsafe { ReleaseDC(std::ptr::null_mut(), screen_dc) };
+        return Err("GDI+ 测量图形创建失败".into());
+    }
+
+    // Create the font for measurement
+    let mut gp_family: GpFontFamily = std::ptr::null_mut();
+    let font_wide = to_wide(FONT_NAME);
+    if unsafe {
+        GdipCreateFontFamilyFromName(font_wide.as_ptr(), std::ptr::null_mut(), &mut gp_family)
+    } != GDI_PLUS_OK
+    {
+        return Err("GDI+ 字体系列创建失败".into());
+    }
+
+    let mut gp_font: GpFont = std::ptr::null_mut();
+    if unsafe {
+        GdipCreateFont(
+            gp_family,
+            scaled_font_size,
+            FONT_STYLE_REGULAR,
+            UNIT_POINT,
+            &mut gp_font,
+        )
+    } != GDI_PLUS_OK
+    {
+        unsafe { GdipDeleteFontFamily(gp_family) };
+        return Err("GDI+ 字体创建失败".into());
+    }
+
+    // Create string format (centered horizontally & vertically)
+    let mut gp_sf: GpStringFormat = std::ptr::null_mut();
+    if unsafe { GdipCreateStringFormat(0, 0, &mut gp_sf) } != GDI_PLUS_OK {
+        unsafe {
+            GdipDeleteFont(gp_font);
+            GdipDeleteFontFamily(gp_family);
+        }
+        return Err("GDI+ 字符串格式创建失败".into());
+    }
+    unsafe {
+        GdipSetStringFormatAlign(gp_sf, STRING_ALIGN_CENTER);
+        GdipSetStringFormatLineAlign(gp_sf, STRING_ALIGN_CENTER);
+    }
+
+    // Measure the display string extent
+    let display_wide = to_wide(DISPLAY_STR);
+    // Dynamic measurement using a temporary GDI+ bitmap:
+    let measure_w = 500i32;
+    let measure_h = 100i32;
+    let bmi = BITMAPINFOHEADER {
+        bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        bi_width: measure_w,
+        bi_height: measure_h,
+        bi_planes: 1,
+        bi_bit_count: 32,
+        bi_compression: BI_RGB,
+        bi_size_image: 0,
+        bi_x_pels_per_meter: 0,
+        bi_y_pels_per_meter: 0,
+        bi_clr_used: 0,
+        bi_clr_important: 0,
+    };
+    let mut tmp_bits: *mut std::ffi::c_void = std::ptr::null_mut();
+    let tmp_dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+    let tmp_bmp = unsafe {
+        CreateDIBSection(
+            tmp_dc,
+            &bmi,
             0,
+            &mut tmp_bits as *mut _,
+            std::ptr::null_mut(),
             0,
-            0,
-            FW_NORMAL,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            DEFAULT_QUALITY as u32,
-            DEFAULT_PITCH | FF_DONTCARE,
-            font_wide.as_ptr(),
         )
     };
-    let old_font = unsafe { SelectObject(hdc, font as HGDIOBJ) };
+    unsafe { SelectObject(tmp_dc, tmp_bmp as HGDIOBJ) };
 
-    let wide_display = to_wide(display_str);
-    let mut extent = [0i32; 2];
-    unsafe {
-        GetTextExtentPoint32W(
-            hdc,
-            wide_display.as_ptr(),
-            (wide_display.len() - 1) as i32,
-            extent.as_mut_ptr(),
-        );
+    let mut mg: GpGraphics = std::ptr::null_mut();
+    let text_w: i32;
+    let text_h: i32;
+
+    if unsafe { GdipCreateFromHDC(tmp_dc, &mut mg) } == GDI_PLUS_OK {
+        // Fill black, draw white text, then scan for white pixels
+        let black: u32 = 0xFF_000000u32;
+        let white: u32 = 0xFF_FFFFFFu32;
+        let mut bb: GpBrush = std::ptr::null_mut();
+        let mut wb: GpBrush = std::ptr::null_mut();
+        unsafe {
+            GdipCreateSolidFill(black, &mut bb);
+            GdipCreateSolidFill(white, &mut wb);
+            GdipFillRectangleI(mg, bb, 0, 0, measure_w, measure_h);
+        }
+
+        let measure_rect = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: measure_w as f32,
+            height: measure_h as f32,
+        };
+        unsafe {
+            GdipDrawString(
+                mg,
+                display_wide.as_ptr(),
+                -1,
+                gp_font,
+                &measure_rect,
+                gp_sf,
+                wb,
+            );
+        }
+
+        // Scan for non-black pixels to find bounding box
+        let bits = unsafe {
+            std::slice::from_raw_parts(tmp_bits as *const u8, (measure_w * measure_h * 4) as usize)
+        };
+        let mut min_x = measure_w;
+        let mut max_x = 0i32;
+        let mut min_y = measure_h;
+        let mut max_y = 0i32;
+        for py in 0..measure_h {
+            for px in 0..measure_w {
+                let idx = ((py * measure_w + px) * 4) as usize;
+                // Check if pixel is non-black (BGRA: any of B,G,R > 0)
+                if bits[idx] != 0 || bits[idx + 1] != 0 || bits[idx + 2] != 0 {
+                    if px < min_x {
+                        min_x = px;
+                    }
+                    if px > max_x {
+                        max_x = px;
+                    }
+                    if py < min_y {
+                        min_y = py;
+                    }
+                    if py > max_y {
+                        max_y = py;
+                    }
+                }
+            }
+        }
+
+        if max_x >= min_x && max_y >= min_y {
+            text_w = max_x - min_x + 1;
+            text_h = max_y - min_y + 1;
+        } else {
+            // Fallback — reasonable estimate
+            text_w = 124;
+            text_h = 28;
+        }
+
+        unsafe {
+            GdipDeleteBrush(bb);
+            GdipDeleteBrush(wb);
+            GdipDeleteGraphics(mg);
+        }
+    } else {
+        text_w = 124;
+        text_h = 28;
     }
 
-    let text_w = extent[0];
-    let text_h = extent[1];
-    let pad_x: i32 = 20;
-    let pad_y: i32 = 10;
-    let win_w = text_w + pad_x * 2;
-    let win_h = text_h + pad_y * 2;
-
     unsafe {
-        SelectObject(hdc, old_font);
-        DeleteObject(font as HGDIOBJ);
-        ReleaseDC(std::ptr::null_mut(), hdc);
+        DeleteObject(tmp_bmp as HGDIOBJ);
+        DeleteDC(tmp_dc);
     }
 
-    // Create window
+    let win_w = text_w + PAD_X * 2;
+    let win_h = text_h + PAD_Y * 2;
+
+    // Clean up temporary GDI+ objects
+    unsafe {
+        GdipDeleteGraphics(tmp_graphics);
+        ReleaseDC(std::ptr::null_mut(), screen_dc);
+    }
+
+    // ── Create the layered window ──────────────
+
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -737,7 +1006,8 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         return Err("创建窗口失败".into());
     }
 
-    // Resources for layered rendering
+    // ── DIB section for UpdateLayeredWindow ─────
+
     let mem_dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
 
     let bmi = BITMAPINFOHEADER {
@@ -769,28 +1039,7 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         SelectObject(mem_dc, bitmap as HGDIOBJ);
     }
 
-    let font = unsafe {
-        CreateFontW(
-            font_size,
-            0,
-            0,
-            0,
-            FW_NORMAL,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            DEFAULT_QUALITY as u32,
-            DEFAULT_PITCH | FF_DONTCARE,
-            font_wide.as_ptr(),
-        )
-    };
-
     let window_config = ClockWindowConfig {
-        font_name: font_name.to_string(),
-        font_size,
         bg_color: (cfg.bg_r, cfg.bg_g, cfg.bg_b, cfg.bg_opacity),
         text_color: (cfg.text_r, cfg.text_g, cfg.text_b),
         display_time: cfg.display_time,
@@ -805,7 +1054,9 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         mem_dc: RawPtr::from_ptr(mem_dc),
         bitmap: RawPtr::from_ptr(bitmap),
         bitmap_bits: RawPtr::from_ptr(bitmap_bits),
-        font: RawPtr::from_ptr(font),
+        gp_font_family: GpObj(gp_family as isize),
+        gp_font: GpObj(gp_font as isize),
+        gp_string_format: GpObj(gp_sf as isize),
         last_time_str: String::new(),
         timer_update_id: 1,
     };
@@ -840,99 +1091,6 @@ pub fn update_config(cfg: &GeneralConfig) {
     }
 }
 
-/// Update font (name/size) and optionally re-create the window resources.
-/// This is called after the user picks a new font via the system dialog.
-pub fn update_font(cfg: &GeneralConfig) {
-    if let Some(state_lock) = GUI_STATE.get() {
-        let mut state_opt = state_lock.lock().unwrap();
-        if let Some(ref mut state) = *state_opt {
-            unsafe {
-                // Delete old font
-                DeleteObject(state.font.as_hgdiobj());
-
-                // Create new font
-                let font_size = -cfg.font_size; // negative = logical point size
-                let font_wide = to_wide(&cfg.font_name);
-                let new_font = CreateFontW(
-                    font_size,
-                    0,
-                    0,
-                    0,
-                    FW_NORMAL,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET as u32,
-                    OUT_DEFAULT_PRECIS as u32,
-                    CLIP_DEFAULT_PRECIS as u32,
-                    DEFAULT_QUALITY as u32,
-                    DEFAULT_PITCH | FF_DONTCARE,
-                    font_wide.as_ptr(),
-                );
-
-                // Measure new text extent to resize window
-                let hdc = GetDC(std::ptr::null_mut());
-                let old_f = SelectObject(hdc, new_font as HGDIOBJ);
-                let display_wide = to_wide("00:00:00");
-                let mut extent = [0i32; 2];
-                GetTextExtentPoint32W(
-                    hdc,
-                    display_wide.as_ptr(),
-                    (display_wide.len() - 1) as i32,
-                    extent.as_mut_ptr(),
-                );
-                SelectObject(hdc, old_f);
-                ReleaseDC(std::ptr::null_mut(), hdc);
-
-                let pad_x: i32 = 20;
-                let pad_y: i32 = 10;
-                let new_w = extent[0] + pad_x * 2;
-                let new_h = extent[1] + pad_y * 2;
-
-                // Resize the DIB section if needed
-                if new_w != state.width || new_h != state.height {
-                    DeleteObject(state.bitmap.as_hgdiobj());
-                    let bmi = BITMAPINFOHEADER {
-                        bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                        bi_width: new_w,
-                        bi_height: new_h,
-                        bi_planes: 1,
-                        bi_bit_count: 32,
-                        bi_compression: BI_RGB,
-                        bi_size_image: 0,
-                        bi_x_pels_per_meter: 0,
-                        bi_y_pels_per_meter: 0,
-                        bi_clr_used: 0,
-                        bi_clr_important: 0,
-                    };
-                    let mut new_bits: *mut std::ffi::c_void = std::ptr::null_mut();
-                    let new_bmp = CreateDIBSection(
-                        state.mem_dc.as_hdc(),
-                        &bmi,
-                        0,
-                        &mut new_bits as *mut _,
-                        std::ptr::null_mut(),
-                        0,
-                    );
-                    SelectObject(state.mem_dc.as_hdc(), new_bmp as HGDIOBJ);
-                    state.bitmap = RawPtr::from_ptr(new_bmp);
-                    state.bitmap_bits = RawPtr::from_ptr(new_bits);
-                    state.width = new_w;
-                    state.height = new_h;
-                }
-
-                state.font = RawPtr::from_ptr(new_font);
-                state.config.font_name = cfg.font_name.clone();
-                state.config.font_size = cfg.font_size;
-
-                if GUI_VISIBLE.load(Ordering::Relaxed) {
-                    redraw_layered_window(state);
-                }
-            }
-        }
-    }
-}
-
 #[allow(dead_code)]
 pub fn destroy_clock_window() {
     if let Some(state_lock) = GUI_STATE.get() {
@@ -940,7 +1098,9 @@ pub fn destroy_clock_window() {
         if let Some(ref state) = *state_opt {
             unsafe {
                 KillTimer(state.hwnd.as_hwnd(), state.timer_update_id);
-                DeleteObject(state.font.as_hgdiobj());
+                GdipDeleteFont(state.gp_font.gp_font());
+                GdipDeleteFontFamily(state.gp_font_family.gp_font_family());
+                GdipDeleteStringFormat(state.gp_string_format.gp_string_format());
                 DeleteObject(state.bitmap.as_hgdiobj());
                 DeleteDC(state.mem_dc.as_hdc());
                 DestroyWindow(state.hwnd.as_hwnd());
@@ -948,4 +1108,5 @@ pub fn destroy_clock_window() {
         }
         *state_opt = None;
     }
+    gdiplus_shutdown();
 }

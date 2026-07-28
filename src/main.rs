@@ -41,49 +41,6 @@ type HWND = *mut std::ffi::c_void;
 //  ChooseFont / ChooseColor dialog structures
 // ───────────────────────────────────────────────
 
-#[allow(dead_code)]
-#[repr(C)]
-struct LOGFONTW {
-    lf_height: i32,
-    lf_width: i32,
-    lf_escapement: i32,
-    lf_orientation: i32,
-    lf_weight: i32,
-    lf_italic: u8,
-    lf_underline: u8,
-    lf_strike_out: u8,
-    lf_char_set: u8,
-    lf_out_precision: u8,
-    lf_clip_precision: u8,
-    lf_quality: u8,
-    lf_pitch_and_family: u8,
-    lf_face_name: [u16; 32],
-}
-
-#[allow(dead_code)]
-#[repr(C)]
-struct CHOOSEFONTW {
-    l_struct_size: u32,
-    hwnd_owner: HWND,
-    hdc: *mut std::ffi::c_void,
-    lp_log_font: *mut LOGFONTW,
-    i_point_size: i32,
-    flags: u32,
-    rgb_colors: u32,
-    l_cust_data: isize,
-    lpfn_hook: *mut std::ffi::c_void,
-    lp_template_name: *const u16,
-    h_instance: *mut std::ffi::c_void,
-    lpsz_style: *const u16,
-    n_font_type: u16,
-    ___missing_alignment: u16,
-    n_size_min: i32,
-    n_size_max: i32,
-}
-
-const CF_SCREENFONTS: u32 = 0x0000_0001;
-const CF_INITTOLOGFONTSTRUCT: u32 = 0x0000_0040;
-const CF_TTONLY: u32 = 0x0004_0000;
 
 #[allow(dead_code)]
 #[repr(C)]
@@ -104,7 +61,6 @@ const CC_FULLOPEN: u32 = 0x0000_0002;
 
 #[link(name = "comdlg32")]
 unsafe extern "system" {
-    fn ChooseFontW(lpcf: *mut CHOOSEFONTW) -> i32;
     fn ChooseColorW(lpcc: *mut CHOOSECOLORW) -> i32;
 }
 
@@ -393,77 +349,6 @@ fn update_auto_start(enable: bool) {
 //  Font & color dialogs
 // ───────────────────────────────────────────────
 
-fn dialog_choose_font() {
-    let mut cfg = CONFIG.get().unwrap().lock().unwrap();
-    let font_name_wide: Vec<u16> = cfg
-        .general
-        .font_name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let mut lf = LOGFONTW {
-        lf_height: -cfg.general.font_size,
-        lf_width: 0,
-        lf_escapement: 0,
-        lf_orientation: 0,
-        lf_weight: 400,
-        lf_italic: 0,
-        lf_underline: 0,
-        lf_strike_out: 0,
-        lf_char_set: 1, // DEFAULT_CHARSET
-        lf_out_precision: 0,
-        lf_clip_precision: 0,
-        lf_quality: 0,
-        lf_pitch_and_family: 0,
-        lf_face_name: [0u16; 32],
-    };
-
-    // Copy font name into lf_face_name
-    let copy_len = (font_name_wide.len() - 1).min(31);
-    lf.lf_face_name[..copy_len].copy_from_slice(&font_name_wide[..copy_len]);
-
-    let mut cf = CHOOSEFONTW {
-        l_struct_size: std::mem::size_of::<CHOOSEFONTW>() as u32,
-        hwnd_owner: std::ptr::null_mut(),
-        hdc: std::ptr::null_mut(),
-        lp_log_font: &mut lf,
-        i_point_size: 0,
-        flags: CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_TTONLY,
-        rgb_colors: 0,
-        l_cust_data: 0,
-        lpfn_hook: std::ptr::null_mut(),
-        lp_template_name: std::ptr::null(),
-        h_instance: std::ptr::null_mut(),
-        lpsz_style: std::ptr::null(),
-        n_font_type: 0,
-        ___missing_alignment: 0,
-        n_size_min: 0,
-        n_size_max: 0,
-    };
-
-    let result = unsafe { ChooseFontW(&mut cf) };
-    if result != 0 {
-        // User picked a font — extract name and size
-        let chosen_name = String::from_utf16_lossy(
-            &lf.lf_face_name[..lf.lf_face_name.iter().position(|&c| c == 0).unwrap_or(32)],
-        );
-        let chosen_size = cf.i_point_size / 10; // i_point_size is in tenths of a point
-
-        cfg.general.font_name = chosen_name;
-        cfg.general.font_size = if chosen_size > 0 {
-            chosen_size
-        } else {
-            -lf.lf_height
-        };
-
-        // Save and apply
-        let _ = cfg.save_to_file();
-        drop(cfg);
-        gui::update_font(&CONFIG.get().unwrap().lock().unwrap().general);
-    }
-}
-
 fn dialog_choose_color() {
     let cfg = CONFIG.get().unwrap().lock().unwrap();
     let rgb: u32 = (cfg.general.text_r as u32)
@@ -494,6 +379,42 @@ fn dialog_choose_color() {
         cfg.general.text_r = r;
         cfg.general.text_g = g;
         cfg.general.text_b = b;
+        let _ = cfg.save_to_file();
+        drop(cfg);
+        gui::update_config(&CONFIG.get().unwrap().lock().unwrap().general);
+    }
+}
+
+fn dialog_choose_bg_color() {
+    let cfg = CONFIG.get().unwrap().lock().unwrap();
+    let rgb: u32 = (cfg.general.bg_r as u32)
+        | ((cfg.general.bg_g as u32) << 8)
+        | ((cfg.general.bg_b as u32) << 16);
+    drop(cfg);
+
+    let mut cust_colors: [u32; 16] = [0; 16];
+    let mut cc = CHOOSECOLORW {
+        l_struct_size: std::mem::size_of::<CHOOSECOLORW>() as u32,
+        hwnd_owner: std::ptr::null_mut(),
+        h_instance: std::ptr::null_mut(),
+        rgb_result: rgb,
+        lp_cust_colors: cust_colors.as_mut_ptr(),
+        flags: CC_RGBINIT | CC_FULLOPEN,
+        l_cust_data: 0,
+        lpfn_hook: std::ptr::null_mut(),
+        lp_template_name: std::ptr::null(),
+    };
+
+    let result = unsafe { ChooseColorW(&mut cc) };
+    if result != 0 {
+        let r = (cc.rgb_result & 0xFF) as u8;
+        let g = ((cc.rgb_result >> 8) & 0xFF) as u8;
+        let b = ((cc.rgb_result >> 16) & 0xFF) as u8;
+
+        let mut cfg = CONFIG.get().unwrap().lock().unwrap();
+        cfg.general.bg_r = r;
+        cfg.general.bg_g = g;
+        cfg.general.bg_b = b;
         let _ = cfg.save_to_file();
         drop(cfg);
         gui::update_config(&CONFIG.get().unwrap().lock().unwrap().general);
@@ -577,13 +498,8 @@ fn main() {
     let skip_item = MenuItem::with_id("skip_next", i18n::tr(i18n::TrKey::SkipNext), true, None);
     let pause_item = MenuItem::with_id("toggle_pause", i18n::tr(i18n::TrKey::Pause), true, None);
     let edit_item = MenuItem::with_id("edit_config", i18n::tr(i18n::TrKey::EditConfig), true, None);
-    let font_item = MenuItem::with_id(
-        "font_settings",
-        i18n::tr(i18n::TrKey::FontSettings),
-        true,
-        None,
-    );
     let color_item = MenuItem::with_id("text_color", i18n::tr(i18n::TrKey::TextColor), true, None);
+    let bg_color_item = MenuItem::with_id("bg_color", i18n::tr(i18n::TrKey::BgColor), true, None);
     let exit_item = MenuItem::with_id("exit", i18n::tr(i18n::TrKey::Exit), true, None);
     let sep = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
@@ -623,14 +539,14 @@ fn main() {
                 drop(cfg);
                 let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
             }
-            "font_settings" => {
-                debug_log("[main] tray menu: font settings\n");
-                dialog_choose_font();
-                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
-            }
             "text_color" => {
                 debug_log("[main] tray menu: text color\n");
                 dialog_choose_color();
+                NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+            }
+            "bg_color" => {
+                debug_log("[main] tray menu: background color\n");
+                dialog_choose_bg_color();
                 NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
             }
             _ => {
@@ -648,8 +564,8 @@ fn main() {
     menu.append(&sep2).ok();
     menu.append(&edit_item).ok();
     menu.append(&sep3).ok();
-    menu.append(&font_item).ok();
     menu.append(&color_item).ok();
+    menu.append(&bg_color_item).ok();
     menu.append(&sep4).ok();
     menu.append(&exit_item).ok();
 

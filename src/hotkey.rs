@@ -37,8 +37,7 @@ unsafe extern "system" {
 }
 
 #[link(name = "kernel32")]
-unsafe extern "system" {
-}
+unsafe extern "system" {}
 
 // ── Hotkey state ──────────────────────────────
 
@@ -92,17 +91,32 @@ pub fn parse_vk(s: &str) -> u32 {
         }
     }
     match s.to_uppercase().as_str() {
-        "F1" => 0x70, "F2" => 0x71, "F3" => 0x72, "F4" => 0x73,
-        "F5" => 0x74, "F6" => 0x75, "F7" => 0x76, "F8" => 0x77,
-        "F9" => 0x78, "F10" => 0x79, "F11" => 0x7A, "F12" => 0x7B,
-        "SPACE" => 0x20, "TAB" => 0x09,
+        "F1" => 0x70,
+        "F2" => 0x71,
+        "F3" => 0x72,
+        "F4" => 0x73,
+        "F5" => 0x74,
+        "F6" => 0x75,
+        "F7" => 0x76,
+        "F8" => 0x77,
+        "F9" => 0x78,
+        "F10" => 0x79,
+        "F11" => 0x7A,
+        "F12" => 0x7B,
+        "SPACE" => 0x20,
+        "TAB" => 0x09,
         "ENTER" | "RETURN" => 0x0D,
         "ESC" | "ESCAPE" => 0x1B,
         "BACKSPACE" | "BACK" => 0x08,
         "DELETE" | "DEL" => 0x2E,
-        "HOME" => 0x24, "END" => 0x23,
-        "PAGEUP" | "PGUP" => 0x21, "PAGEDOWN" | "PGDN" => 0x22,
-        "UP" => 0x26, "DOWN" => 0x28, "LEFT" => 0x25, "RIGHT" => 0x27,
+        "HOME" => 0x24,
+        "END" => 0x23,
+        "PAGEUP" | "PGUP" => 0x21,
+        "PAGEDOWN" | "PGDN" => 0x22,
+        "UP" => 0x26,
+        "DOWN" => 0x28,
+        "LEFT" => 0x25,
+        "RIGHT" => 0x27,
         _ => 'T' as u32,
     }
 }
@@ -126,20 +140,42 @@ unsafe extern "system" fn keyboard_hook_callback(
         if vk_code == expected_vk {
             // Check modifiers
             let mut current_mods = 0u32;
-            if (unsafe { GetKeyState(0x10 /* VK_SHIFT */) } as u32 & 0x8000) != 0 {
+            if (unsafe {
+                GetKeyState(0x10 /* VK_SHIFT */)
+            } as u32
+                & 0x8000)
+                != 0
+            {
                 current_mods |= MOD_SHIFT;
             }
-            if (unsafe { GetKeyState(0x11 /* VK_CONTROL */) } as u32 & 0x8000) != 0 {
+            if (unsafe {
+                GetKeyState(0x11 /* VK_CONTROL */)
+            } as u32
+                & 0x8000)
+                != 0
+            {
                 current_mods |= MOD_CONTROL;
             }
             // Alt: check both left and right Alt, and the LLKHF_ALTDOWN flag
-            let alt_down = (unsafe { GetKeyState(0x12 /* VK_MENU */) } as u32 & 0x8000) != 0;
+            let alt_down = (unsafe {
+                GetKeyState(0x12 /* VK_MENU */)
+            } as u32
+                & 0x8000)
+                != 0;
             if alt_down {
                 current_mods |= MOD_ALT;
             }
             // Win key: check both left and right Windows keys
-            let lwin = (unsafe { GetKeyState(0x5B /* VK_LWIN */) } as u32 & 0x8000) != 0;
-            let rwin = (unsafe { GetKeyState(0x5C /* VK_RWIN */) } as u32 & 0x8000) != 0;
+            let lwin = (unsafe {
+                GetKeyState(0x5B /* VK_LWIN */)
+            } as u32
+                & 0x8000)
+                != 0;
+            let rwin = (unsafe {
+                GetKeyState(0x5C /* VK_RWIN */)
+            } as u32
+                & 0x8000)
+                != 0;
             if lwin || rwin {
                 current_mods |= MOD_WIN;
             }
@@ -148,7 +184,9 @@ unsafe extern "system" fn keyboard_hook_callback(
                 let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
                 if !target.is_null() {
                     debug_log("[hotkey] keyboard hook matched, posting WM_USER_HOTKEY\n");
-                    unsafe { PostMessageW(target, WM_USER_HOTKEY, 0, 0); }
+                    unsafe {
+                        PostMessageW(target, WM_USER_HOTKEY, 0, 0);
+                    }
                 }
                 // Don't block the key — let other apps see it too
             }
@@ -210,7 +248,9 @@ pub fn update(mod_str: &str, key_str: &str) {
 pub fn destroy() {
     let hook = HOOK_HANDLE.load(Ordering::Relaxed) as HHOOK;
     if !hook.is_null() {
-        unsafe { UnhookWindowsHookEx(hook); }
+        unsafe {
+            UnhookWindowsHookEx(hook);
+        }
         HOOK_HANDLE.store(0, Ordering::Relaxed);
         HOTKEY_ACTIVE.store(false, Ordering::Relaxed);
     }

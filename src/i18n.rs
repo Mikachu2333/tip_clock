@@ -49,8 +49,8 @@ pub enum TrKey {
     Resume,
     Exit,
     EditConfig,
-    FontSettings,
     TextColor,
+    BgColor,
     #[allow(dead_code)]
     VolumeLabel,
 }
@@ -105,13 +105,13 @@ pub fn tr(key: TrKey) -> &'static str {
             Lang::En => "Edit Config",
             Lang::Zh => "编辑配置",
         },
-        TrKey::FontSettings => match lang {
-            Lang::En => "Font...",
-            Lang::Zh => "字体...",
-        },
         TrKey::TextColor => match lang {
             Lang::En => "Text Color...",
             Lang::Zh => "文字颜色...",
+        },
+        TrKey::BgColor => match lang {
+            Lang::En => "Background Color...",
+            Lang::Zh => "背景颜色...",
         },
         TrKey::VolumeLabel => match lang {
             Lang::En => "Volume",
