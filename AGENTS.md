@@ -47,7 +47,7 @@ res/
 | | `text_r` / `text_g` / `text_b` | u8 (0-255) | `0, 0, 0` |
 | | `display_time` | u32 (1-60 s) | `3` |
 | | `volume` | u8 (0-100) | `80` |
-| | `hotkey_mod` | string | `"Win+Alt"` |
+| | `hotkey_mod` | string | `"Ctrl+Alt"` |
 | | `hotkey_key` | string | `"B"` |
 | | `window_x` | i32 | `-1` (auto) |
 | | `window_y` | i32 | `-1` (auto) |

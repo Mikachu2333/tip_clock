@@ -88,7 +88,13 @@ pub fn init(mod_str: &str, key_str: &str, target_hwnd: HWND) -> Result<(), Strin
     // SAFETY: target_hwnd is a live window created by gui.rs; the ID is private
     // to that window, and modifiers/vk are validated integer flags.
     if unsafe { RegisterHotKey(target_hwnd, HOTKEY_ID, modifiers, vk) } == 0 {
-        return Err("RegisterHotKey failed (the shortcut may already be in use)".into());
+        let error = std::io::Error::last_os_error();
+        let error_text = format!(
+            "RegisterHotKey failed (Win32 error {}): {error}",
+            error.raw_os_error().unwrap_or_default()
+        );
+        win_msgbox_timeout::error_msgbox("Error", &error_text, 3);
+        return Err(error_text);
     }
     REGISTERED_HWND.store(target_hwnd as isize, Ordering::Release);
     Ok(())

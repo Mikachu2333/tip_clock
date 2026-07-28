@@ -64,7 +64,7 @@ impl Default for GeneralConfig {
             text_b: 0,
             display_time: 3,
             volume: 80,
-            hotkey_mod: "Win+Alt".into(),
+            hotkey_mod: "Ctrl+Alt".into(),
             hotkey_key: "B".into(),
             window_x: -1,
             window_y: -1,

@@ -12,7 +12,7 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 | ------------------- | ------------------------------------------------------------------------ |
 | Scheduled Reminders | Set any number of reminder times in `config.toml` (24-hour format)       |
 | Audio Alerts        | Optional WAV, FLAC, or MP3 file per reminder; silent reminders supported |
-| Global Hotkey       | Show/hide clock with `Win+Alt+B` (customizable)                          |
+| Global Hotkey       | Show/hide clock with `Ctrl+Alt+B` (customizable)                         |
 | Drag to Reposition  | Drag the popup window anywhere; position is saved automatically          |
 | Auto Hide           | Hides automatically after a configurable duration (default 3s)           |
 | Slide Animation     | Smooth slide-in / slide-out animation                                    |
@@ -80,7 +80,7 @@ volume = 80
 
 # Show/hide hotkey
 # Modifiers: alt, ctrl, shift, win (use + to combine)
-hotkey_mod = "Win+Alt"
+hotkey_mod = "Ctrl+Alt"
 hotkey_key = "B"
 
 # Window position (top-left pixel coordinates, -1 = auto)
@@ -133,9 +133,9 @@ time = "13:42:57"
 
 ## Hotkeys
 
-| Hotkey                | Action            |
-| --------------------- | ----------------- |
-| `Win+Alt+B` (default) | Show / hide clock |
+| Hotkey                 | Action            |
+| ---------------------- | ----------------- |
+| `Ctrl+Alt+B` (default) | Show / hide clock |
 
 Customizable in `config.toml`. Supported modifiers: `alt`, `ctrl`, `shift`, `win`. Supported keys: `A-Z`, `0-9`, `F1-F12`, `Space`, `Enter`, `Esc`, etc.
 
