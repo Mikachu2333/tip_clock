@@ -11,7 +11,7 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 | Feature             | Description                                                        |
 | ------------------- | ------------------------------------------------------------------ |
 | Scheduled Reminders | Set any number of reminder times in `config.toml` (24-hour format) |
-| Audio Alerts        | Built-in start / end / special chimes, plus custom WAV support     |
+| Audio Alerts        | Built-in chimes, plus custom WAV, FLAC, and MP3 support            |
 | Global Hotkey       | Show/hide clock with `Win+Alt+B` (customizable)                    |
 | Drag to Reposition  | Drag the popup window anywhere; position is saved automatically    |
 | Auto Hide           | Hides automatically after a configurable duration (default 3s)     |
@@ -31,7 +31,7 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 2. The clock display refreshes every 0.5 seconds to minimize system load.
 3. Time format is `HH:MM:SS` (24-hour), e.g. `08:00:00`. Single digits must be zero-padded.
 4. Changes to `config.toml` require a program restart to take effect.
-5. Custom WAV files must be in the EXE folder. The `.wav` suffix is optional; absolute paths and subdirectories are rejected.
+5. Custom WAV, FLAC, and MP3 files must be in the EXE folder, and all three may omit the extension. For identical stems, lookup order is WAV → FLAC → MP3; an explicit extension selects that file. Absolute paths and subdirectories are rejected.
 6. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically.
 7. `volume` controls only Tip Clock's audio stream and never changes the Windows system volume.
 
@@ -95,7 +95,7 @@ window_y = -1
 #       start   = built-in start chime
 #       end     = built-in end chime
 #       special = built-in special chime
-#       custom  = play custom WAV (requires custom_file)
+#       custom  = play custom WAV / FLAC / MP3 (requires custom_file)
 #       none    = silent (window only)
 
 [[schedule]]
@@ -114,7 +114,7 @@ ring = "special"
 time = "10:00:00"
 ring = "none"
 
-# Custom audio example (place lunch.wav in the same folder)
+# Custom audio example (WAV / FLAC / MP3 supported)
 [[schedule]]
 time = "12:00:00"
 ring = "custom"
@@ -128,24 +128,24 @@ custom_file = "lunch"
 | `start`   | Built-in start chime                                               |
 | `end`     | Built-in end chime                                                 |
 | `special` | Built-in special chime                                             |
-| `custom`  | Plays a custom `.wav` file from the EXE folder (set `custom_file`) |
+| `custom`  | Plays a WAV, FLAC, or MP3 file from the EXE folder (`custom_file`) |
 | `none`    | Silent — window pops up with no sound                              |
 
 ---
 
 ## Tray Menu
 
-| Item                    | Action                               |
-| ----------------------- | ------------------------------------ |
-| Next                    | Show next reminder time and type     |
-| Show Clock / Hide Clock | Toggle clock visibility              |
-| Skip Next               | Skip the upcoming reminder           |
-| Pause / Resume          | Pause or resume all reminders        |
-| Edit Config             | Open config.toml in Notepad          |
-| Text Color...           | Change clock text color              |
-| Background Color...     | Change clock background color        |
+| Item                    | Action                                       |
+| ----------------------- | -------------------------------------------- |
+| Next                    | Show next reminder time and type             |
+| Show Clock / Hide Clock | Toggle clock visibility                      |
+| Skip Next               | Skip the upcoming reminder                   |
+| Pause / Resume          | Pause or resume all reminders                |
+| Edit Config             | Open config.toml in Notepad                  |
+| Text Color...           | Change clock text color                      |
+| Background Color...     | Change clock background color                |
 | Opacity                 | Adjust background opacity in a numeric field |
-| Exit                    | Quit the program                     |
+| Exit                    | Quit the program                             |
 
 **Left-click** the tray icon = toggle clock
 **Right-click** the tray icon = open menu

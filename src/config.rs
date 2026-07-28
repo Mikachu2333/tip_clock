@@ -48,7 +48,7 @@ impl RingType {
 pub struct ScheduleEntry {
     pub time: String,
     pub ring: RingType,
-    /// For RingType::Custom, a WAV file name in the EXE directory.
+    /// For RingType::Custom, a WAV/FLAC/MP3 file name in the EXE directory.
     #[serde(default)]
     pub custom_file: Option<String>,
 }
@@ -167,7 +167,7 @@ const CONFIG_TEMPLATE_ZH: &str = r#"# ──────────────
 # ──────────────────────────────────────────────
 #  时间格式: HH:MM:SS (24小时制)
 #  提示音类型: start, end, special, custom, none
-#    custom = 播放同目录下的 wav 文件
+#    custom = 播放同目录下的 WAV、FLAC 或 MP3 文件
 #    none   = 不播放音频
 #  修改后需重启程序生效
 #  使用 # 开头的行是注释, 不会被读取
@@ -221,7 +221,8 @@ time = "10:00:00"
 ring = "none"
 
 [[schedule]]
-# 自定义提示音示例, 需在同目录下放置 lunch.wav 文件，仅支持 wav
+# 自定义提示音示例, 需在同目录下放置 lunch.wav 文件
+# 支持 WAV、FLAC、MP3；可省略扩展名，按 WAV、FLAC、MP3 顺序查找
 time = "12:00:00"
 ring = "custom"
 custom_file = "lunch"
@@ -233,7 +234,7 @@ const CONFIG_TEMPLATE_EN: &str = r#"# ──────────────
 # ──────────────────────────────────────────────
 #  Time format: HH:MM:SS (24-hour)
 #  Ring types: start, end, special, custom, none
-#    custom = play a .wav file from the same folder
+#    custom = play a WAV, FLAC, or MP3 file from the same folder
 #    none   = no sound
 #  Changes require a program restart to take effect
 #  Lines starting with # are comments
@@ -287,7 +288,8 @@ time = "10:00:00"
 ring = "none"
 
 [[schedule]]
-# custom ring example, requires lunch.wav in the same folder (only wav supported)
+# Custom ring example; WAV, FLAC, and MP3 are supported.
+# The extension may be omitted; lookup order is WAV, FLAC, then MP3.
 time = "12:00:00"
 ring = "custom"
 custom_file = "lunch"

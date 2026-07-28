@@ -1,5 +1,5 @@
 use crate::config::RingType;
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 use std::io::{BufReader, Cursor};
 use std::path::{Component, Path};
 
@@ -26,8 +26,8 @@ const SPECIAL_WAV: &[u8] = include_bytes!("../res/special.wav");
 /// Application-scoped audio output. Sink volume affects only this process and
 /// never changes the Windows device/mixer volume.
 pub struct AudioPlayer {
-    _stream: OutputStream,
-    sink: Sink,
+    _device_sink: MixerDeviceSink,
+    player: Player,
 }
 
 impl std::fmt::Debug for AudioPlayer {
@@ -38,13 +38,13 @@ impl std::fmt::Debug for AudioPlayer {
 
 impl AudioPlayer {
     pub fn new(default_volume: u8) -> Result<Self, String> {
-        let stream = OutputStreamBuilder::open_default_stream()
+        let device_sink = DeviceSinkBuilder::open_default_sink()
             .map_err(|e| format!("Failed to open the default audio output: {e}"))?;
-        let sink = Sink::connect_new(stream.mixer());
-        sink.set_volume(f32::from(default_volume.min(100)) / 100.0);
+        let player = Player::connect_new(device_sink.mixer());
+        player.set_volume(f32::from(default_volume.min(100)) / 100.0);
         Ok(Self {
-            _stream: stream,
-            sink,
+            _device_sink: device_sink,
+            player,
         })
     }
 
@@ -71,23 +71,24 @@ impl AudioPlayer {
     fn queue_embedded(&self, data: &'static [u8]) -> Result<(), String> {
         let decoder = Decoder::new_wav(Cursor::new(data))
             .map_err(|e| format!("failed to decode embedded WAV: {e}"))?;
-        self.sink.append(decoder);
+        self.player.append(decoder);
         Ok(())
     }
 
     fn queue_custom(&self, filename: &str, exe_dir: &Path) -> Result<(), String> {
-        let relative = safe_wav_name(filename)?;
-        let full_path = exe_dir.join(relative);
+        let full_path = resolve_audio_path(filename, exe_dir)?;
         let file = std::fs::File::open(&full_path)
-            .map_err(|e| format!("cannot open custom WAV '{}': {e}", full_path.display()))?;
-        let decoder = Decoder::new_wav(BufReader::new(file))
-            .map_err(|e| format!("cannot decode custom WAV '{}': {e}", full_path.display()))?;
-        self.sink.append(decoder);
+            .map_err(|e| format!("cannot open custom audio '{}': {e}", full_path.display()))?;
+        // Decoder::try_from detects the enabled WAV/FLAC/MP3 formats from the
+        // stream, so a misleading extension cannot select the wrong decoder.
+        let decoder = Decoder::try_from(BufReader::new(file))
+            .map_err(|e| format!("cannot decode custom audio '{}': {e}", full_path.display()))?;
+        self.player.append(decoder);
         Ok(())
     }
 }
 
-fn safe_wav_name(filename: &str) -> Result<std::path::PathBuf, String> {
+fn validate_audio_name(filename: &str) -> Result<&Path, String> {
     let trimmed = filename.trim();
     if trimmed.is_empty() {
         return Err("custom_file is empty".into());
@@ -101,15 +102,36 @@ fn safe_wav_name(filename: &str) -> Result<std::path::PathBuf, String> {
     {
         return Err("custom_file must be a file name inside the application directory".into());
     }
-    let mut result = path.to_path_buf();
-    match result.extension().and_then(|ext| ext.to_str()) {
-        None => {
-            result.set_extension("wav");
-        }
-        Some(ext) if ext.eq_ignore_ascii_case("wav") => {}
-        Some(_) => return Err("custom_file must have the .wav extension".into()),
+    if let Some(ext) = path.extension().and_then(|ext| ext.to_str())
+        && !ext.eq_ignore_ascii_case("wav")
+        && !ext.eq_ignore_ascii_case("flac")
+        && !ext.eq_ignore_ascii_case("mp3")
+    {
+        return Err("custom_file must be a WAV, FLAC, or MP3 file".into());
     }
-    Ok(result)
+    Ok(path)
+}
+
+fn resolve_audio_path(filename: &str, exe_dir: &Path) -> Result<std::path::PathBuf, String> {
+    let relative = validate_audio_name(filename)?;
+    if relative.extension().is_some() {
+        return Ok(exe_dir.join(relative));
+    }
+
+    // An omitted extension searches all supported formats deterministically.
+    // WAV wins when multiple files have the same stem.
+    for extension in ["wav", "flac", "mp3"] {
+        let candidate = exe_dir.join(relative).with_extension(extension);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "custom audio not found: expected '{}.wav', '{}.flac', or '{}.mp3'",
+        relative.display(),
+        relative.display(),
+        relative.display()
+    ))
 }
 
 pub(crate) fn to_wide(s: &str) -> Vec<u16> {
@@ -148,12 +170,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn custom_wav_is_confined_to_app_directory() {
-        assert_eq!(safe_wav_name("alert").unwrap(), Path::new("alert.wav"));
-        assert_eq!(safe_wav_name("alert.WAV").unwrap(), Path::new("alert.WAV"));
-        assert!(safe_wav_name("../alert").is_err());
-        assert!(safe_wav_name("folder/alert").is_err());
-        assert!(safe_wav_name(r"C:\\alert.wav").is_err());
-        assert!(safe_wav_name("alert.mp3").is_err());
+    fn custom_audio_name_is_confined_and_format_checked() {
+        assert_eq!(validate_audio_name("alert").unwrap(), Path::new("alert"));
+        assert_eq!(
+            validate_audio_name("alert.WAV").unwrap(),
+            Path::new("alert.WAV")
+        );
+        assert_eq!(
+            validate_audio_name("alert.flac").unwrap(),
+            Path::new("alert.flac")
+        );
+        assert_eq!(
+            validate_audio_name("alert.MP3").unwrap(),
+            Path::new("alert.MP3")
+        );
+        assert!(validate_audio_name("../alert.mp3").is_err());
+        assert!(validate_audio_name("folder/alert.flac").is_err());
+        assert!(validate_audio_name(r"C:\\alert.wav").is_err());
+        assert!(validate_audio_name("alert.ogg").is_err());
+    }
+
+    #[test]
+    fn omitted_extension_prefers_wav_then_flac_then_mp3() {
+        let root =
+            std::env::temp_dir().join(format!("tip-clock-audio-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        std::fs::write(root.join("alert.mp3"), []).unwrap();
+        assert_eq!(
+            resolve_audio_path("alert", &root).unwrap(),
+            root.join("alert.mp3")
+        );
+        std::fs::write(root.join("alert.flac"), []).unwrap();
+        assert_eq!(
+            resolve_audio_path("alert", &root).unwrap(),
+            root.join("alert.flac")
+        );
+        std::fs::write(root.join("alert.wav"), []).unwrap();
+        assert_eq!(
+            resolve_audio_path("alert", &root).unwrap(),
+            root.join("alert.wav")
+        );
+        assert_eq!(
+            resolve_audio_path("alert.mp3", &root).unwrap(),
+            root.join("alert.mp3")
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
