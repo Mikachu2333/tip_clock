@@ -15,42 +15,17 @@ unsafe extern "system" {
 }
 
 // ───────────────────────────────────────────────
-//  Ring type — now includes Custom and None
-// ───────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RingType {
-    Start,
-    End,
-    Special,
-    Custom,
-    None,
-}
-
-impl RingType {
-    pub fn display_name(self) -> &'static str {
-        match self {
-            RingType::Start => "start",
-            RingType::End => "end",
-            RingType::Special => "special",
-            RingType::Custom => "custom",
-            RingType::None => "none",
-        }
-    }
-}
-
-// ───────────────────────────────────────────────
 //  Schedule entry
 // ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleEntry {
     pub time: String,
-    pub ring: RingType,
-    /// For RingType::Custom, a WAV/FLAC/MP3 file name in the EXE directory.
-    #[serde(default)]
-    pub custom_file: Option<String>,
+    /// Optional WAV/FLAC/MP3 file in the configuration directory.
+    /// An omitted value creates a silent visual reminder. The alias imports
+    /// custom-file entries from version 1.3.x when the config is next saved.
+    #[serde(default, alias = "custom_file")]
+    pub audio: Option<String>,
 }
 
 // ───────────────────────────────────────────────
@@ -147,8 +122,7 @@ pub struct ParsedEntry {
     pub total_sec: u32,
     pub hour: u32,
     pub minute: u32,
-    pub ring: RingType,
-    pub custom_file: Option<String>,
+    pub audio: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +132,7 @@ pub struct Config {
     pub schedule: Vec<ScheduleEntry>,
     pub entries: Vec<ParsedEntry>,
     pub config_path: PathBuf,
-    pub exe_dir: PathBuf,
+    pub config_dir: PathBuf,
 }
 
 /// Template for auto-creating config with comments — Chinese
@@ -166,9 +140,8 @@ const CONFIG_TEMPLATE_ZH: &str = r#"# ──────────────
 #  Tip Clock 配置文件
 # ──────────────────────────────────────────────
 #  时间格式: HH:MM:SS (24小时制)
-#  提示音类型: start, end, special, custom, none
-#    custom = 播放同目录下的 WAV、FLAC 或 MP3 文件
-#    none   = 不播放音频
+#  audio: 配置目录内的 WAV、FLAC 或 MP3 文件名（可省略扩展名）
+#  省略 audio 时仅显示时钟，不播放音频
 #  修改后需重启程序生效
 #  使用 # 开头的行是注释, 不会被读取
 # ──────────────────────────────────────────────
@@ -204,28 +177,13 @@ window_x = {window_x}
 window_y = {window_y}
 
 [[schedule]]
-# 提醒时间与提示音
+# 有声音的提醒；首次创建配置时会同步生成 demo.mp3
 time = "08:00:00"
-ring = "start"
+audio = "demo"
 
 [[schedule]]
-time = "08:45:00"
-ring = "end"
-
-[[schedule]]
-time = "09:40:00"
-ring = "special"
-
-[[schedule]]
-time = "10:00:00"
-ring = "none"
-
-[[schedule]]
-# 自定义提示音示例, 需在同目录下放置 lunch.wav 文件
-# 支持 WAV、FLAC、MP3；可省略扩展名，按 WAV、FLAC、MP3 顺序查找
+# 静音提醒：省略 audio
 time = "12:00:00"
-ring = "custom"
-custom_file = "lunch"
 "#;
 
 /// Template for auto-creating config with comments — English
@@ -233,9 +191,8 @@ const CONFIG_TEMPLATE_EN: &str = r#"# ──────────────
 #  Tip Clock Configuration
 # ──────────────────────────────────────────────
 #  Time format: HH:MM:SS (24-hour)
-#  Ring types: start, end, special, custom, none
-#    custom = play a WAV, FLAC, or MP3 file from the same folder
-#    none   = no sound
+#  audio: WAV, FLAC, or MP3 file in the config directory (extension optional)
+#  Omit audio for a silent visual reminder
 #  Changes require a program restart to take effect
 #  Lines starting with # are comments
 # ──────────────────────────────────────────────
@@ -271,28 +228,13 @@ window_x = {window_x}
 window_y = {window_y}
 
 [[schedule]]
-# Reminder time and ring
+# Audible reminder; demo.mp3 is created with the initial config
 time = "08:00:00"
-ring = "start"
+audio = "demo"
 
 [[schedule]]
-time = "08:45:00"
-ring = "end"
-
-[[schedule]]
-time = "09:40:00"
-ring = "special"
-
-[[schedule]]
-time = "10:00:00"
-ring = "none"
-
-[[schedule]]
-# Custom ring example; WAV, FLAC, and MP3 are supported.
-# The extension may be omitted; lookup order is WAV, FLAC, then MP3.
+# Silent reminder: omit audio
 time = "12:00:00"
-ring = "custom"
-custom_file = "lunch"
 "#;
 
 /// Select the appropriate config template based on system language
@@ -393,20 +335,23 @@ pub fn default_schedule() -> Vec<ScheduleEntry> {
     vec![
         ScheduleEntry {
             time: "08:00:00".into(),
-            ring: RingType::Start,
-            custom_file: None,
+            audio: Some("demo".into()),
         },
         ScheduleEntry {
-            time: "08:45:00".into(),
-            ring: RingType::End,
-            custom_file: None,
-        },
-        ScheduleEntry {
-            time: "09:40:00".into(),
-            ring: RingType::Special,
-            custom_file: None,
+            time: "12:00:00".into(),
+            audio: None,
         },
     ]
+}
+
+const DEMO_AUDIO: &[u8] = include_bytes!("../res/demo.mp3");
+
+fn install_demo_audio(config_dir: &Path) -> Result<(), String> {
+    let demo_path = config_dir.join("demo.mp3");
+    if !demo_path.exists() {
+        atomic_write(&demo_path, DEMO_AUDIO)?;
+    }
+    Ok(())
 }
 
 impl Config {
@@ -424,12 +369,16 @@ impl Config {
             let mut cfg = Self::load_and_merge(&config_path)?;
             cfg.general.clamp();
             let entries = Config::build_entries(&cfg.schedule);
+            let config_dir = config_path
+                .parent()
+                .ok_or("Config path has no parent directory")?
+                .to_path_buf();
             Ok(Config {
                 general: cfg.general,
                 schedule: cfg.schedule,
                 entries,
                 config_path: config_path.clone(),
-                exe_dir,
+                config_dir,
             })
         } else {
             // Create default config from template
@@ -449,6 +398,14 @@ impl Config {
                 .replace("{hotkey_key}", &default.hotkey_key)
                 .replace("{window_x}", &default.window_x.to_string())
                 .replace("{window_y}", &default.window_y.to_string());
+            let config_dir = config_path
+                .parent()
+                .ok_or("Config path has no parent directory")?
+                .to_path_buf();
+            // Install the demo first. If config creation then fails, the next
+            // startup still sees no config and safely retries without
+            // overwriting an existing demo file.
+            install_demo_audio(&config_dir)?;
             atomic_write(&config_path, content.as_bytes())?;
 
             let schedule = default_schedule();
@@ -458,7 +415,7 @@ impl Config {
                 schedule,
                 entries,
                 config_path,
-                exe_dir,
+                config_dir,
             })
         }
     }
@@ -534,14 +491,20 @@ impl Config {
         current_h: u32,
         current_m: u32,
         current_s: u32,
-    ) -> Option<(u32, u32, u32, RingType, bool)> {
+    ) -> Option<(u32, u32, u32, Option<&str>, bool)> {
         let current_total = current_h * 3600 + current_m * 60 + current_s;
         if let Some(e) = self.entries.iter().find(|e| e.total_sec > current_total) {
-            return Some((e.hour, e.minute, e.total_sec % 60, e.ring, false));
+            return Some((
+                e.hour,
+                e.minute,
+                e.total_sec % 60,
+                e.audio.as_deref(),
+                false,
+            ));
         }
         self.entries
             .first()
-            .map(|e| (e.hour, e.minute, e.total_sec % 60, e.ring, true))
+            .map(|e| (e.hour, e.minute, e.total_sec % 60, e.audio.as_deref(), true))
     }
 
     fn build_entries(schedule: &[ScheduleEntry]) -> Vec<ParsedEntry> {
@@ -556,8 +519,7 @@ impl Config {
                     total_sec: h * 3600 + m * 60 + s,
                     hour: h,
                     minute: m,
-                    ring: entry.ring,
-                    custom_file: entry.custom_file.clone(),
+                    audio: entry.audio.clone(),
                 })
             })
             .collect();
@@ -740,12 +702,8 @@ impl Config {
         for entry in &self.schedule {
             out.push_str("[[schedule]]\n");
             out.push_str(&format!("time = {}\n", toml_string(&entry.time)));
-            out.push_str(&format!(
-                "ring = {}\n",
-                toml_string(entry.ring.display_name())
-            ));
-            if let Some(ref cf) = entry.custom_file {
-                out.push_str(&format!("custom_file = {}\n", toml_string(cf)));
+            if let Some(ref audio) = entry.audio {
+                out.push_str(&format!("audio = {}\n", toml_string(audio)));
             }
             out.push('\n');
         }
@@ -803,8 +761,8 @@ mod tests {
 
     #[test]
     fn test_auto_quote_bare_times() {
-        let input = "[[schedule]]\ntime = 09:00\nring = \"start\"\n";
-        let expect = "[[schedule]]\ntime = \"09:00\"\nring = \"start\"\n";
+        let input = "[[schedule]]\ntime = 09:00\naudio = \"demo\"\n";
+        let expect = "[[schedule]]\ntime = \"09:00\"\naudio = \"demo\"\n";
         assert_eq!(auto_quote_bare_times(input), expect);
     }
 
@@ -834,17 +792,31 @@ mod tests {
     }
 
     #[test]
+    fn test_demo_audio_install_is_non_destructive() {
+        let root =
+            std::env::temp_dir().join(format!("tip-clock-config-demo-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        install_demo_audio(&root).unwrap();
+        assert_eq!(std::fs::read(root.join("demo.mp3")).unwrap(), DEMO_AUDIO);
+
+        std::fs::write(root.join("demo.mp3"), b"user audio").unwrap();
+        install_demo_audio(&root).unwrap();
+        assert_eq!(std::fs::read(root.join("demo.mp3")).unwrap(), b"user audio");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn test_entries_at_single() {
         let entries = vec![
             ScheduleEntry {
                 time: "09:00:00".into(),
-                ring: RingType::Start,
-                custom_file: None,
+                audio: Some("demo".into()),
             },
             ScheduleEntry {
                 time: "12:00:00".into(),
-                ring: RingType::End,
-                custom_file: None,
+                audio: None,
             },
         ];
         let parsed = Config::build_entries(&entries);
@@ -855,7 +827,7 @@ mod tests {
             .filter(|e| e.total_sec > 9 * 3600 - 1 && e.total_sec <= 9 * 3600)
             .collect::<Vec<_>>();
         assert_eq!(at_9.len(), 1);
-        assert_eq!(at_9[0].ring, RingType::Start);
+        assert_eq!(at_9[0].audio.as_deref(), Some("demo"));
         // No match
         let at_10 = parsed
             .iter()
@@ -869,13 +841,11 @@ mod tests {
         let entries = vec![
             ScheduleEntry {
                 time: "14:00:00".into(),
-                ring: RingType::End,
-                custom_file: None,
+                audio: None,
             },
             ScheduleEntry {
                 time: "08:00:00".into(),
-                ring: RingType::Start,
-                custom_file: None,
+                audio: Some("demo.mp3".into()),
             },
         ];
         let parsed = Config::build_entries(&entries);
@@ -888,13 +858,11 @@ mod tests {
         let entries = vec![
             ScheduleEntry {
                 time: "08:00:00".into(),
-                ring: RingType::Start,
-                custom_file: None,
+                audio: Some("demo".into()),
             },
             ScheduleEntry {
                 time: "25:00:00".into(),
-                ring: RingType::End,
-                custom_file: None,
+                audio: None,
             },
         ];
         let parsed = Config::build_entries(&entries);

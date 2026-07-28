@@ -1,6 +1,5 @@
-use crate::config::RingType;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
-use std::io::{BufReader, Cursor};
+use std::io::BufReader;
 use std::path::{Component, Path};
 
 #[link(name = "kernel32")]
@@ -18,10 +17,6 @@ unsafe extern "system" {
 
 const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
 const INVALID_HANDLE_VALUE: isize = -1;
-
-const START_WAV: &[u8] = include_bytes!("../res/start.wav");
-const END_WAV: &[u8] = include_bytes!("../res/end.wav");
-const SPECIAL_WAV: &[u8] = include_bytes!("../res/special.wav");
 
 /// Application-scoped audio output. Sink volume affects only this process and
 /// never changes the Windows device/mixer volume.
@@ -48,35 +43,16 @@ impl AudioPlayer {
         })
     }
 
-    /// Queue a reminder sound. Multiple reminders at the same second play in
-    /// schedule order rather than interrupting each other.
-    pub fn play(&self, ring: RingType, custom_file: Option<&str>, exe_dir: &Path) {
-        let result = match ring {
-            RingType::None => Ok(()),
-            RingType::Start => self.queue_embedded(START_WAV),
-            RingType::End => self.queue_embedded(END_WAV),
-            RingType::Special => self.queue_embedded(SPECIAL_WAV),
-            RingType::Custom => custom_file
-                .ok_or_else(|| "custom ring requires custom_file".to_string())
-                .and_then(|name| self.queue_custom(name, exe_dir)),
-        };
-        if let Err(error) = result {
-            debug_log(format!("[audio] {error}; using the embedded fallback\n"));
-            if ring != RingType::Special {
-                let _ = self.queue_embedded(SPECIAL_WAV);
-            }
+    /// Queue an external reminder sound. Multiple reminders at the same second
+    /// play in schedule order rather than interrupting one another.
+    pub fn play(&self, filename: &str, audio_dir: &Path) {
+        if let Err(error) = self.queue_file(filename, audio_dir) {
+            debug_log(format!("[audio] {error}\n"));
         }
     }
 
-    fn queue_embedded(&self, data: &'static [u8]) -> Result<(), String> {
-        let decoder = Decoder::new_wav(Cursor::new(data))
-            .map_err(|e| format!("failed to decode embedded WAV: {e}"))?;
-        self.player.append(decoder);
-        Ok(())
-    }
-
-    fn queue_custom(&self, filename: &str, exe_dir: &Path) -> Result<(), String> {
-        let full_path = resolve_audio_path(filename, exe_dir)?;
+    fn queue_file(&self, filename: &str, audio_dir: &Path) -> Result<(), String> {
+        let full_path = resolve_audio_path(filename, audio_dir)?;
         let file = std::fs::File::open(&full_path)
             .map_err(|e| format!("cannot open custom audio '{}': {e}", full_path.display()))?;
         // Decoder::try_from detects the enabled WAV/FLAC/MP3 formats from the
@@ -91,7 +67,7 @@ impl AudioPlayer {
 fn validate_audio_name(filename: &str) -> Result<&Path, String> {
     let trimmed = filename.trim();
     if trimmed.is_empty() {
-        return Err("custom_file is empty".into());
+        return Err("audio is empty".into());
     }
     let path = Path::new(trimmed);
     if path.is_absolute()
@@ -100,28 +76,28 @@ fn validate_audio_name(filename: &str) -> Result<&Path, String> {
             .any(|part| !matches!(part, Component::Normal(_)))
         || path.file_name() != Some(path.as_os_str())
     {
-        return Err("custom_file must be a file name inside the application directory".into());
+        return Err("audio must be a file name inside the configuration directory".into());
     }
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str())
         && !ext.eq_ignore_ascii_case("wav")
         && !ext.eq_ignore_ascii_case("flac")
         && !ext.eq_ignore_ascii_case("mp3")
     {
-        return Err("custom_file must be a WAV, FLAC, or MP3 file".into());
+        return Err("audio must be a WAV, FLAC, or MP3 file".into());
     }
     Ok(path)
 }
 
-fn resolve_audio_path(filename: &str, exe_dir: &Path) -> Result<std::path::PathBuf, String> {
+fn resolve_audio_path(filename: &str, audio_dir: &Path) -> Result<std::path::PathBuf, String> {
     let relative = validate_audio_name(filename)?;
     if relative.extension().is_some() {
-        return Ok(exe_dir.join(relative));
+        return Ok(audio_dir.join(relative));
     }
 
     // An omitted extension searches all supported formats deterministically.
     // WAV wins when multiple files have the same stem.
     for extension in ["wav", "flac", "mp3"] {
-        let candidate = exe_dir.join(relative).with_extension(extension);
+        let candidate = audio_dir.join(relative).with_extension(extension);
         if candidate.is_file() {
             return Ok(candidate);
         }

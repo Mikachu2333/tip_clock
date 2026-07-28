@@ -8,20 +8,20 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 
 ## Features
 
-| Feature             | Description                                                        |
-| ------------------- | ------------------------------------------------------------------ |
-| Scheduled Reminders | Set any number of reminder times in `config.toml` (24-hour format) |
-| Audio Alerts        | Built-in chimes, plus custom WAV, FLAC, and MP3 support            |
-| Global Hotkey       | Show/hide clock with `Win+Alt+B` (customizable)                    |
-| Drag to Reposition  | Drag the popup window anywhere; position is saved automatically    |
-| Auto Hide           | Hides automatically after a configurable duration (default 3s)     |
-| Slide Animation     | Smooth slide-in / slide-out animation                              |
-| Tray Menu           | System tray icon - left-click to toggle, right-click for menu      |
-| Color Customization | Change text and background colors via color picker                 |
-| Auto Start          | Optional Windows startup launch                                    |
-| DPI Aware           | Supports multi-monitor and high-DPI setups                         |
-| Single Instance     | Prevents duplicate processes                                       |
-| Multi-language      | Auto-detects system language (Chinese / English)                   |
+| Feature             | Description                                                              |
+| ------------------- | ------------------------------------------------------------------------ |
+| Scheduled Reminders | Set any number of reminder times in `config.toml` (24-hour format)       |
+| Audio Alerts        | Optional WAV, FLAC, or MP3 file per reminder; silent reminders supported |
+| Global Hotkey       | Show/hide clock with `Win+Alt+B` (customizable)                          |
+| Drag to Reposition  | Drag the popup window anywhere; position is saved automatically          |
+| Auto Hide           | Hides automatically after a configurable duration (default 3s)           |
+| Slide Animation     | Smooth slide-in / slide-out animation                                    |
+| Tray Menu           | System tray icon - left-click to toggle, right-click for menu            |
+| Color Customization | Change text and background colors via color picker                       |
+| Auto Start          | Optional Windows startup launch                                          |
+| DPI Aware           | Supports multi-monitor and high-DPI setups                               |
+| Single Instance     | Prevents duplicate processes                                             |
+| Multi-language      | Auto-detects system language (Chinese / English)                         |
 
 ---
 
@@ -31,15 +31,15 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 2. The clock display refreshes every 0.5 seconds to minimize system load.
 3. Time format is `HH:MM:SS` (24-hour), e.g. `08:00:00`. Single digits must be zero-padded.
 4. Changes to `config.toml` require a program restart to take effect.
-5. Custom WAV, FLAC, and MP3 files must be in the EXE folder, and all three may omit the extension. For identical stems, lookup order is WAV → FLAC → MP3; an explicit extension selects that file. Absolute paths and subdirectories are rejected.
-6. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically.
+5. WAV, FLAC, and MP3 files must be in the `config.toml` directory, and all three may omit the extension. For identical stems, lookup order is WAV → FLAC → MP3; an explicit extension selects that file. Absolute paths and subdirectories are rejected.
+6. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically. When configuration is first created, `demo.mp3` is extracted into the same directory.
 7. `volume` controls only Tip Clock's audio stream and never changes the Windows system volume.
 
 ---
 
 ## Installation
 
-Download `tip_clock.exe` from the [Releases](https://github.com/Mikachu2333/tip_clock/releases) page, place it in any folder, and run it. A `config.toml` will be created on first launch.
+Download `tip_clock.exe` from the [Releases](https://github.com/Mikachu2333/tip_clock/releases) page, place it in any folder, and run it. `config.toml` and the example audio `demo.mp3` are created on first launch.
 
 ### Build from source
 
@@ -54,7 +54,7 @@ cargo build --release
 
 ## Configuration
 
-Edit `config.toml` (in the same folder as the EXE) and restart the program.
+Edit `config.toml` in the active configuration directory and restart the program. If the EXE directory is not writable, the active directory is `%LOCALAPPDATA%\TipClock`.
 
 ```toml
 [general]
@@ -91,45 +91,24 @@ window_y = -1
 # Each [[schedule]] block defines one reminder.
 #
 # time: HH:MM:SS (24-hour)
-# ring: start / end / special / custom / none
-#       start   = built-in start chime
-#       end     = built-in end chime
-#       special = built-in special chime
-#       custom  = play custom WAV / FLAC / MP3 (requires custom_file)
-#       none    = silent (window only)
+# audio: optional WAV / FLAC / MP3 file in the config directory
 
+# Audible reminder; omitted extension searches demo.wav, demo.flac, demo.mp3
 [[schedule]]
 time = "08:00:00"
-ring = "start"
+audio = "demo"
 
-[[schedule]]
-time = "08:45:00"
-ring = "end"
-
-[[schedule]]
-time = "09:40:00"
-ring = "special"
-
-[[schedule]]
-time = "10:00:00"
-ring = "none"
-
-# Custom audio example (WAV / FLAC / MP3 supported)
+# Silent reminder: omit audio
 [[schedule]]
 time = "12:00:00"
-ring = "custom"
-custom_file = "lunch"
 ```
 
-### Ring Types
+### Audio Configuration
 
-| Type      | Description                                                        |
-| --------- | ------------------------------------------------------------------ |
-| `start`   | Built-in start chime                                               |
-| `end`     | Built-in end chime                                                 |
-| `special` | Built-in special chime                                             |
-| `custom`  | Plays a WAV, FLAC, or MP3 file from the EXE folder (`custom_file`) |
-| `none`    | Silent — window pops up with no sound                              |
+- `audio` is optional; omitting it creates a silent visual reminder.
+- WAV, FLAC, and MP3 are supported.
+- Audio files reside beside `config.toml`.
+- `demo.mp3` is extracted when the initial configuration is created.
 
 ---
 
@@ -168,14 +147,12 @@ Customizable in `config.toml`. Supported modifiers: `alt`, `ctrl`, `shift`, `win
 src/
 ├── main.rs      — Entry point, tray menu, message loop
 ├── config.rs    — TOML config parsing, time normalization
-├── audio.rs     — Audio playback (PlaySoundW)
+├── audio.rs     — External WAV / FLAC / MP3 playback (rodio)
 ├── gui.rs       — Clock window (GDI+ rendering, DPI aware)
-├── hotkey.rs    — Global hotkey (WH_KEYBOARD_LL)
+├── hotkey.rs    — Global hotkey (RegisterHotKey)
 └── i18n.rs      — Multi-language support (Chinese / English)
 res/
-├── start.wav    — Built-in chime
-├── end.wav
-├── special.wav
+├── demo.mp3     — Example audio extracted with the initial config
 └── ico_raw      — Tray icon (256×256 RGBA)
 ```
 

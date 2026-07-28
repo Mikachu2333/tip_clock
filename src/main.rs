@@ -201,20 +201,20 @@ static INSTANCE: OnceLock<std::sync::Mutex<Option<SingleInstance>>> = OnceLock::
 fn next_label(cfg: &Config) -> String {
     let now = Local::now();
     match cfg.next_reminder(now.hour(), now.minute(), now.second()) {
-        Some((h, m, s, ring, tomorrow)) => {
+        Some((h, m, s, audio, tomorrow)) => {
             let day = if tomorrow {
                 i18n::tr(i18n::TrKey::Tomorrow)
             } else {
                 ""
             };
             format!(
-                "{}  {}{:02}:{:02}:{:02}  ({})",
+                "{}  {}{:02}:{:02}:{:02}{}",
                 i18n::tr(i18n::TrKey::NextReminder),
                 day,
                 h,
                 m,
                 s,
-                ring.display_name()
+                audio.map_or("", |_| "  ♪")
             )
         }
         None => i18n::tr(i18n::TrKey::NoMoreReminders).to_string(),
@@ -716,16 +716,14 @@ fn main() {
                 if !do_skip && !entries.is_empty() {
                     for entry in &entries {
                         debug_log(format!(
-                            "[main] schedule match at {:02}:{:02}:{:02}, ring={:?}\n",
-                            current.0, current.1, current.2, entry.ring
+                            "[main] schedule match at {:02}:{:02}:{:02}, audio={:?}\n",
+                            current.0, current.1, current.2, entry.audio
                         ));
-                        AUDIO.get().unwrap().play(
-                            entry.ring,
-                            entry.custom_file.as_deref(),
-                            &cfg.exe_dir,
-                        );
+                        if let Some(audio) = entry.audio.as_deref() {
+                            AUDIO.get().unwrap().play(audio, &cfg.config_dir);
+                        }
                     }
-                    // RingType::None means silent reminder, not no reminder.
+                    // Omitting audio means a silent visual reminder.
                     gui::show_clock();
                     true
                 } else {

@@ -3,7 +3,7 @@
 ## Build & toolchain
 
 - **Edition 2024** — stable Rust 1.85+.
-- Windows-only. Uses `user32`, `kernel32`, `winmm`, `shcore`, `advapi32`, `comdlg32`, `gdiplus` FFI directly.
+- Windows-only. Uses `user32`, `kernel32`, `shcore`, `advapi32`, `comdlg32`, `gdi32`, `gdiplus` FFI directly.
 - Clippy-clean; `upper_case_acronyms` allowed via `#![allow(...)]` (Win32 types match C API convention).
 
 ```bash
@@ -21,22 +21,20 @@ src/
 │                  auto-start registry, ChooseColor dialogs
 ├── config.rs    — TOML config (auto-create, CJK punctuation auto-correct,
 │                  time normalizer, i18n config templates, value clamping)
-├── audio.rs     — PlaySoundW (embedded + custom WAVs), waveOutSetVolume
+├── audio.rs     — rodio playback for external WAV/FLAC/MP3 files
 ├── gui.rs       — layered clock window (WS_EX_LAYERED, GDI+ rendering,
 │                  32-bit BGRA DIB, pre-multiplied alpha, DPI-aware text sizing)
-├── hotkey.rs    — global hotkey via SetWindowsHookEx (WH_KEYBOARD_LL)
+├── hotkey.rs    — global hotkey via RegisterHotKey + MOD_NOREPEAT
 └── i18n.rs      — GetUserDefaultLocaleName detection (EN/ZH), tray menu + config template i18n
 res/
-├── start.wav    — embedded via include_bytes!
-├── end.wav
-├── special.wav
+├── demo.mp3     — embedded only for first-run extraction beside config.toml
 └── ico_raw      — 256×256 RGBA tray icon, embedded via include_bytes!
 ```
 
 ## Configuration (`config.toml`)
 
-- Read **once at startup** from EXE directory. No hot-reload; restart to apply changes.
-- Auto-created on first run with a language-aware template (ZH or EN).
+- Read **once at startup**. Uses the EXE directory when writable, otherwise `%LOCALAPPDATA%\TipClock`. No hot-reload; restart to apply changes.
+- Auto-created on first run with a language-aware template (ZH or EN); `demo.mp3` is extracted beside it.
 - Auto-corrects CJK full-width punctuation and bare time values.
 - Missing keys filled from `GeneralConfig::default()`.
 - Values clamped: `bg_opacity` <= 100, `display_time` 1-60, `volume` <= 100.
@@ -54,8 +52,7 @@ res/
 | | `window_x` | i32 | `-1` (auto) |
 | | `window_y` | i32 | `-1` (auto) |
 | `[[schedule]]` | `time` | `"HH:MM:SS"` | - |
-| | `ring` | `start`/`end`/`special`/`custom`/`none` | - |
-| | `custom_file` | string (optional) | - |
+| | `audio` | WAV/FLAC/MP3 file name (optional; omitted = silent) | - |
 
 ## Architecture
 
@@ -66,8 +63,8 @@ res/
 - **DPI**: `PROCESS_PER_MONITOR_DPI_AWARE`. Font size and window dimensions scale with system DPI.
 - **Message loop**: `MsgWaitForMultipleObjects` (500ms timeout) + `PeekMessageW` / `DispatchMessageW`.
 - **Timer**: `WM_TIMER` every 500ms redraws time and checks auto-hide.
-- **Hotkey**: `SetWindowsHookEx(WH_KEYBOARD_LL)` global hook posts `WM_USER_HOTKEY` to clock window.
-- **Audio**: `PlaySoundW` with `SND_MEMORY | SND_ASYNC` (embedded) or `SND_FILENAME | SND_ASYNC` (custom). Volume via `waveOutSetVolume`.
+- **Hotkey**: OS-managed `RegisterHotKey` with `MOD_NOREPEAT`.
+- **Audio**: rodio application-scoped output; external WAV/FLAC/MP3 files beside the active config. No built-in reminder sounds.
 - **Auto-start**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry.
 - **i18n**: `GetUserDefaultLocaleName` detection (EN/ZH). Tray menu and config template follow system language.
 - **Tray**: left-click toggles clock; right-click shows context menu. `ChooseColorW` dialogs for text/background color.
