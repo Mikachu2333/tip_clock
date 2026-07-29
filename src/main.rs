@@ -19,7 +19,7 @@ use tray_icon::{
 };
 
 use audio::AudioPlayer;
-use config::Config;
+use config::{Config, ParsedEntry};
 
 const PROCESS_GUID: &str = "F44E29E669346E0CC3105EA440E85C00";
 
@@ -198,10 +198,28 @@ static INSTANCE: OnceLock<std::sync::Mutex<Option<SingleInstance>>> = OnceLock::
 //  Menu helpers
 // ───────────────────────────────────────────────
 
-fn next_label(cfg: &Config) -> String {
+fn next_label(cfg: &Config, skip_count: u32) -> String {
     let now = Local::now();
-    match cfg.next_reminder(now.hour(), now.minute(), now.second()) {
-        Some((h, m, s, audio, tomorrow)) => {
+    let current_sec = now.hour() * 3600 + now.minute() * 60 + now.second();
+
+    // Collect all entries after the current time, then skip `skip_count` of them.
+    // If none remain, wrap around to the start of the day (with tomorrow flag).
+    let filtered: Vec<&ParsedEntry> = cfg
+        .entries
+        .iter()
+        .filter(|e| e.total_sec > current_sec)
+        .collect();
+
+    let entry = if (skip_count as usize) < filtered.len() {
+        Some(filtered[skip_count as usize])
+    } else {
+        // All remaining entries today are skipped — show the first entry tomorrow.
+        cfg.entries.first()
+    };
+
+    match entry {
+        Some(e) => {
+            let tomorrow = e.total_sec <= current_sec;
             let day = if tomorrow {
                 i18n::tr(i18n::TrKey::Tomorrow)
             } else {
@@ -211,10 +229,10 @@ fn next_label(cfg: &Config) -> String {
                 "{}  {}{:02}:{:02}:{:02}{}",
                 i18n::tr(i18n::TrKey::NextReminder),
                 day,
-                h,
-                m,
-                s,
-                audio.map_or("", |_| "  ♪")
+                e.hour,
+                e.minute,
+                e.total_sec % 60,
+                e.audio.as_deref().map_or("", |_| "  ♪")
             )
         }
         None => i18n::tr(i18n::TrKey::NoMoreReminders).to_string(),
@@ -230,6 +248,7 @@ fn refresh_menu_items(
 ) {
     let cfg = CONFIG.get().unwrap().lock().unwrap();
     let paused = PAUSED.get().unwrap().load(Ordering::Relaxed);
+    let skip_count = SKIP_COUNT.get().unwrap().load(Ordering::Relaxed);
 
     if paused {
         tray.set_tooltip(Some(&format!(
@@ -242,7 +261,7 @@ fn refresh_menu_items(
         skip_item.set_enabled(false);
         pause_item.set_text(i18n::tr(i18n::TrKey::Resume));
     } else {
-        let label = next_label(&cfg);
+        let label = next_label(&cfg, skip_count);
         tray.set_tooltip(Some(&label)).ok();
         next_item.set_text(&label);
         skip_item.set_enabled(true);
@@ -511,7 +530,7 @@ fn main() {
     });
 
     let next_item = MenuItem::new(
-        next_label(&CONFIG.get().unwrap().lock().unwrap()),
+        next_label(&CONFIG.get().unwrap().lock().unwrap(), 0),
         false,
         None,
     );
@@ -726,6 +745,11 @@ fn main() {
                     // Omitting audio means a silent visual reminder.
                     gui::show_clock();
                     true
+                } else if do_skip && !entries.is_empty() {
+                    // A scheduled entry was skipped — update the menu/tooltip so the
+                    // user immediately sees the *next* reminder after the skipped one.
+                    NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+                    false
                 } else {
                     false
                 }

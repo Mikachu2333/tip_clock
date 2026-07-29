@@ -128,7 +128,6 @@ pub struct ParsedEntry {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: GeneralConfig,
-    #[allow(dead_code)]
     pub schedule: Vec<ScheduleEntry>,
     pub entries: Vec<ParsedEntry>,
     pub config_path: PathBuf,
@@ -484,27 +483,6 @@ impl Config {
         };
 
         Ok(merged)
-    }
-
-    pub fn next_reminder(
-        &self,
-        current_h: u32,
-        current_m: u32,
-        current_s: u32,
-    ) -> Option<(u32, u32, u32, Option<&str>, bool)> {
-        let current_total = current_h * 3600 + current_m * 60 + current_s;
-        if let Some(e) = self.entries.iter().find(|e| e.total_sec > current_total) {
-            return Some((
-                e.hour,
-                e.minute,
-                e.total_sec % 60,
-                e.audio.as_deref(),
-                false,
-            ));
-        }
-        self.entries
-            .first()
-            .map(|e| (e.hour, e.minute, e.total_sec % 60, e.audio.as_deref(), true))
     }
 
     fn build_entries(schedule: &[ScheduleEntry]) -> Vec<ParsedEntry> {
