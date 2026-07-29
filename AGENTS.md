@@ -9,7 +9,7 @@
 ```bash
 cargo build --release    # release: LTO, single-cgu, stripped, panic=abort, no console window
 cargo build              # debug: console visible, debug_log active
-cargo test               # 8 unit tests for config time-parsing & normalization
+cargo test               # 17 unit tests — config time-parsing & normalization, hotkey parsing, audio file resolution
 cargo clippy             # zero warnings
 ```
 
@@ -39,20 +39,20 @@ res/
 - Missing keys filled from `GeneralConfig::default()`.
 - Values clamped: `bg_opacity` <= 100, `display_time` 1-60, `volume` <= 100.
 
-| Section | Key | Type | Default |
-| --------- | ----- | ------ | --------- |
-| `[general]` | `auto_start` | bool | `false` |
-| | `bg_r` / `bg_g` / `bg_b` | u8 (0-255) | `255, 255, 255` |
-| | `bg_opacity` | u8 (0-100) | `0` |
-| | `text_r` / `text_g` / `text_b` | u8 (0-255) | `0, 0, 0` |
-| | `display_time` | u32 (1-60 s) | `3` |
-| | `volume` | u8 (0-100) | `80` |
-| | `hotkey_mod` | string | `"Ctrl+Alt"` |
-| | `hotkey_key` | string | `"B"` |
-| | `window_x` | i32 | `-1` (auto) |
-| | `window_y` | i32 | `-1` (auto) |
-| `[[schedule]]` | `time` | `"HH:MM:SS"` | - |
-| | `audio` | WAV/FLAC/MP3 file name (optional; omitted = silent) | - |
+| Section        | Key                            | Type                                                | Default         |
+| -------------- | ------------------------------ | --------------------------------------------------- | --------------- |
+| `[general]`    | `auto_start`                   | bool                                                | `false`         |
+|                | `bg_r` / `bg_g` / `bg_b`       | u8 (0-255)                                          | `255, 255, 255` |
+|                | `bg_opacity`                   | u8 (0-100)                                          | `0`             |
+|                | `text_r` / `text_g` / `text_b` | u8 (0-255)                                          | `0, 0, 0`       |
+|                | `display_time`                 | u32 (1-60 s)                                        | `3`             |
+|                | `volume`                       | u8 (0-100)                                          | `80`            |
+|                | `hotkey_mod`                   | string                                              | `"Ctrl+Alt"`    |
+|                | `hotkey_key`                   | string                                              | `"B"`           |
+|                | `window_x`                     | i32                                                 | `-1` (auto)     |
+|                | `window_y`                     | i32                                                 | `-1` (auto)     |
+| `[[schedule]]` | `time`                         | `"HH:MM:SS"`                                        | -               |
+|                | `audio`                        | WAV/FLAC/MP3 file name (optional; omitted = silent) | -               |
 
 ## Architecture
 
@@ -68,4 +68,6 @@ res/
 - **Auto-start**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry.
 - **i18n**: `GetUserDefaultLocaleName` detection (EN/ZH). Tray menu and config template follow system language.
 - **Tray**: left-click toggles clock; right-click shows context menu. `ChooseColorW` dialogs for text/background color.
+- **Skip next**: `SKIP_COUNT` atomic counter; click increments, main loop consumes on next schedule match. `NEED_REFRESH` atomic flag triggers immediate menu/tooltip update after skip consumption.
+- **Menu refresh**: `NEED_REFRESH` flag checked every main-loop iteration (≤500ms). `refresh_menu_items()` reads `SKIP_COUNT` via `next_label(cfg, skip_count)` to compute the _actually upcoming_ reminder, providing immediate visual feedback when user clicks "Skip next".
 - **Debug logging**: `cfg!(debug_assertions)` only; `[main]` / `[gui]` / `[hotkey]` prefixes.
