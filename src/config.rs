@@ -298,6 +298,22 @@ fn content_hash(data: &[u8]) -> u64 {
     hasher.finish()
 }
 
+fn general_template_section(content: &str) -> &str {
+    // Match only an actual TOML array-table header. Comments are allowed to
+    // mention `[[schedule]]` without becoming accidental split points.
+    let schedule_offset = content
+        .lines()
+        .scan(0usize, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        })
+        .find_map(|(offset, line)| (line.trim() == "[[schedule]]").then_some(offset));
+    schedule_offset
+        .map(|offset| &content[..offset])
+        .unwrap_or(content)
+}
+
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
@@ -775,10 +791,7 @@ impl Config {
         // Keep only the [general] section header and everything above the first
         // [[schedule]] line.  Then append the *actual* schedule entries so that
         // user-added / user-modified times are preserved across saves.
-        let general_section = content
-            .split_once("[[schedule]]")
-            .map(|(head, _)| head)
-            .unwrap_or(&content);
+        let general_section = general_template_section(&content);
 
         let mut out = general_section.trim_end().to_string();
         out.push_str("\n\n");
@@ -804,6 +817,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn template_split_ignores_schedule_text_inside_comments() {
+        let template = "# Hot reload: [[schedule]]\n[general]\nvolume = 80\n\n[[schedule]]\ntime = \"08:00:00\"\n";
+        assert_eq!(
+            general_template_section(template),
+            "# Hot reload: [[schedule]]\n[general]\nvolume = 80\n\n"
+        );
+    }
 
     #[test]
     fn test_normalize_time_variants() {

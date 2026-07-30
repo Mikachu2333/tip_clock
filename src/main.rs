@@ -31,6 +31,9 @@ const INTERVAL_SECS: u32 = 15;
 const PM_REMOVE: u32 = 1;
 const QS_ALLINPUT: u32 = 0x04FF;
 const WM_QUIT: u32 = 0x0012;
+const WM_TIMER: u32 = 0x0113;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_NCMOUSEMOVE: u32 = 0x00A0;
 
 type HWND = *mut std::ffi::c_void;
 
@@ -290,8 +293,8 @@ fn pump_messages() {
             if msg.message == WM_QUIT {
                 quit_app(0);
             }
-            if msg.message != 0x0113 {
-                // Log every dispatched message with hwnd and message code
+            if !matches!(msg.message, WM_TIMER | WM_MOUSEMOVE | WM_NCMOUSEMOVE) {
+                // Exclude high-frequency timer and pointer-motion messages.
                 debug_log(format!(
                     "[main] pump: hwnd={:?} msg=0x{:04x}\n",
                     msg.hwnd, msg.message

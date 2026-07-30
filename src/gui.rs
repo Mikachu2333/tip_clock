@@ -174,8 +174,8 @@ const WM_NCLBUTTONDOWN: u32 = 0x00A1;
 const HTCAPTION: isize = 2;
 
 const IDC_ARROW: *const u16 = 32512usize as *const u16;
-const NULL_BRUSH: i32 = 5;
-const TRANSPARENT_BK: i32 = 1;
+const WHITE_BRUSH: i32 = 0;
+const OPAQUE_BK: i32 = 2;
 
 const LOGPIXELSY: i32 = 90; // pixels per logical inch (vertical DPI)
 
@@ -1956,11 +1956,14 @@ unsafe extern "system" fn opacity_panel_wndproc(
             return 1;
         }
         WM_CTLCOLOREDIT => {
+            // EDIT controls must erase their client area when text changes.
+            // A transparent background with NULL_BRUSH leaves old glyph pixels
+            // behind, producing visible input trails.
             let hdc = wparam as HDC;
             unsafe {
-                SetBkMode(hdc, TRANSPARENT_BK);
+                SetBkMode(hdc, OPAQUE_BK);
             }
-            return unsafe { GetStockObject(NULL_BRUSH) } as LRESULT;
+            return unsafe { GetStockObject(WHITE_BRUSH) } as LRESULT;
         }
         WM_ACTIVATE => {
             let code = (wparam as u32) & 0xFFFF;
