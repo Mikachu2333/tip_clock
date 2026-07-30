@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +22,7 @@ unsafe extern "system" {
 //  Schedule entry
 // ───────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleEntry {
     pub time: String,
     /// Optional WAV/FLAC/MP3 file in the configuration directory.
@@ -134,6 +136,7 @@ pub struct Config {
     pub entries: Vec<ParsedEntry>,
     pub config_path: PathBuf,
     pub config_dir: PathBuf,
+    disk_hash: u64,
 }
 
 /// Template for auto-creating config with comments — Chinese
@@ -143,8 +146,9 @@ const CONFIG_TEMPLATE_ZH: &str = r#"# ──────────────
 #  时间格式: HH:MM:SS (24小时制)
 #  audio: 配置目录内的 WAV、FLAC 或 MP3 文件名（可省略扩展名）
 #  省略 audio 时仅显示时钟，不播放音频
-#  修改后需重启程序生效
-#  使用 # 开头的行是注释, 不会被读取
+#  热重载: display_time 和 [[schedule]]（自动规范化、去重）
+#  仅重启生效: auto_start、volume、hotkey_mod、hotkey_key
+#  颜色、透明度和窗口位置请通过程序界面修改
 # ──────────────────────────────────────────────
 
 [general]
@@ -194,8 +198,9 @@ const CONFIG_TEMPLATE_EN: &str = r#"# ──────────────
 #  Time format: HH:MM:SS (24-hour)
 #  audio: WAV, FLAC, or MP3 file in the config directory (extension optional)
 #  Omit audio for a silent visual reminder
-#  Changes require a program restart to take effect
-#  Lines starting with # are comments
+#  Hot reload: display_time and [[schedule]] (normalized and deduplicated)
+#  Restart only: auto_start, volume, hotkey_mod, hotkey_key
+#  Change colors, opacity, and window position through the application
 # ──────────────────────────────────────────────
 
 [general]
@@ -283,6 +288,16 @@ fn choose_config_path(exe_path: &Path) -> Result<PathBuf, String> {
 
 fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
+}
+
+fn same_schedule(left: &[ScheduleEntry], right: &[ScheduleEntry]) -> bool {
+    left == right
+}
+
+fn content_hash(data: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
 }
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -416,12 +431,16 @@ impl Config {
                 .parent()
                 .ok_or("Config path has no parent directory")?
                 .to_path_buf();
+            let disk_hash = std::fs::read(&config_path)
+                .map(|data| content_hash(&data))
+                .map_err(|e| format!("Failed to fingerprint config: {e}"))?;
             Ok(Config {
                 general: cfg.general,
                 schedule: cfg.schedule,
                 entries,
                 config_path: config_path.clone(),
                 config_dir,
+                disk_hash,
             })
         } else {
             // Create default config from template
@@ -453,12 +472,14 @@ impl Config {
 
             let schedule = default_schedule();
             let entries = Config::build_entries(&schedule);
+            let disk_hash = content_hash(content.as_bytes());
             Ok(Config {
                 general: default,
                 schedule,
                 entries,
                 config_path,
                 config_dir,
+                disk_hash,
             })
         }
     }
@@ -467,7 +488,10 @@ impl Config {
     fn load_and_merge(path: &PathBuf) -> Result<ConfigFile, String> {
         let raw =
             std::fs::read_to_string(path).map_err(|e| format!("Failed to read config: {e}"))?;
+        Self::parse_config_text(&raw)
+    }
 
+    fn parse_config_text(raw: &str) -> Result<ConfigFile, String> {
         // Normalize common CJK punctuation in the entire file
         let raw_cleaned = raw
             .replace('：', ":") // full-width colon
@@ -519,6 +543,8 @@ impl Config {
         if valid_schedule.is_empty() && !cfg.schedule.is_empty() {
             return Err("All configured schedule entries are invalid".into());
         }
+        let mut seen = HashSet::new();
+        valid_schedule.retain(|entry| seen.insert((entry.time.clone(), entry.audio.clone())));
         let final_schedule = valid_schedule;
 
         let merged = ConfigFile {
@@ -527,6 +553,44 @@ impl Config {
         };
 
         Ok(merged)
+    }
+
+    /// Reload only fields explicitly permitted to change while running.
+    /// Returns true when the effective runtime configuration changed.
+    pub fn reload_hot_fields(&mut self) -> Result<bool, String> {
+        let raw = std::fs::read(&self.config_path)
+            .map_err(|e| format!("Failed to read config for hot reload: {e}"))?;
+        let hash = content_hash(&raw);
+        if hash == self.disk_hash {
+            return Ok(false);
+        }
+        let text =
+            std::str::from_utf8(&raw).map_err(|e| format!("Config is not valid UTF-8: {e}"))?;
+        let mut disk = Self::parse_config_text(text)?;
+        disk.general.clamp();
+
+        let changed = self.general.display_time != disk.general.display_time
+            || !same_schedule(&self.schedule, &disk.schedule);
+        self.general.display_time = disk.general.display_time;
+        self.schedule = disk.schedule;
+        self.entries = Self::build_entries(&self.schedule);
+        self.disk_hash = hash;
+        Ok(changed)
+    }
+
+    /// Merge disk-owned hot fields before a program-originated save. This
+    /// prevents tray changes from overwriting a user's recent schedule edit.
+    fn merge_hot_fields_from_disk(&mut self) -> Result<(), String> {
+        let raw = std::fs::read(&self.config_path)
+            .map_err(|e| format!("Failed to read config before save: {e}"))?;
+        let text =
+            std::str::from_utf8(&raw).map_err(|e| format!("Config is not valid UTF-8: {e}"))?;
+        let mut disk = Self::parse_config_text(text)?;
+        disk.general.clamp();
+        self.general.display_time = disk.general.display_time;
+        self.schedule = disk.schedule;
+        self.entries = Self::build_entries(&self.schedule);
+        Ok(())
     }
 
     fn build_entries(schedule: &[ScheduleEntry]) -> Vec<ParsedEntry> {
@@ -693,7 +757,8 @@ fn auto_quote_bare_times(raw: &str) -> String {
 
 /// Write back the config using the template with current values
 impl Config {
-    pub fn save_to_file(&self) -> Result<(), String> {
+    pub fn save_to_file(&mut self) -> Result<(), String> {
+        self.merge_hot_fields_from_disk()?;
         // Build the [general] section from the template to preserve comments.
         let content = config_template()
             .replace("{auto_start}", &self.general.auto_start.to_string())
@@ -730,7 +795,9 @@ impl Config {
             out.push('\n');
         }
 
-        atomic_write(&self.config_path, out.as_bytes())
+        atomic_write(&self.config_path, out.as_bytes())?;
+        self.disk_hash = content_hash(out.as_bytes());
+        Ok(())
     }
 }
 
@@ -826,6 +893,71 @@ mod tests {
         std::fs::write(root.join("demo.mp3"), b"user audio").unwrap();
         install_demo_audio(&root).unwrap();
         assert_eq!(std::fs::read(root.join("demo.mp3")).unwrap(), b"user audio");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_hot_reload_accepts_only_schedule_and_display_time() {
+        let root =
+            std::env::temp_dir().join(format!("tip-clock-hot-reload-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        let initial = r#"[general]
+display_time = 3
+text_r = 10
+bg_opacity = 20
+window_x = 30
+hotkey_mod = "Ctrl+Alt"
+
+[[schedule]]
+time = "08:00:00"
+audio = "demo"
+"#;
+        std::fs::write(&path, initial).unwrap();
+        let mut cfg = Config {
+            general: GeneralConfig {
+                display_time: 3,
+                text_r: 10,
+                bg_opacity: 20,
+                window_x: 30,
+                ..GeneralConfig::default()
+            },
+            schedule: vec![ScheduleEntry {
+                time: "08:00:00".into(),
+                audio: Some("demo".into()),
+            }],
+            entries: Vec::new(),
+            config_path: path.clone(),
+            config_dir: root.clone(),
+            disk_hash: content_hash(initial.as_bytes()),
+        };
+
+        let edited = r#"[general]
+display_time = 8
+text_r = 200
+bg_opacity = 90
+window_x = 999
+hotkey_mod = "Win+Shift"
+
+[[schedule]]
+time = "9:0"
+audio = "demo"
+
+[[schedule]]
+time = "09:00:00"
+audio = "demo"
+"#;
+        std::fs::write(&path, edited).unwrap();
+        assert!(cfg.reload_hot_fields().unwrap());
+        assert_eq!(cfg.general.display_time, 8);
+        assert_eq!(cfg.schedule.len(), 1);
+        assert_eq!(cfg.schedule[0].time, "09:00:00");
+        assert_eq!(cfg.general.text_r, 10);
+        assert_eq!(cfg.general.bg_opacity, 20);
+        assert_eq!(cfg.general.window_x, 30);
+        assert_eq!(cfg.general.hotkey_mod, "Ctrl+Alt");
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -30,7 +30,7 @@
 1. 本软件为免费软件，遵循 MIT 协议。
 2. 为降低系统负载，程序每 0.5 秒刷新一次时钟显示。
 3. 提醒时间格式为 `HH:MM:SS`（24 小时制），个位数需补零，例如 `08:00:00`。
-4. 修改 `config.toml` 后需重启程序生效。
+4. `display_time` 和 `[[schedule]]` 支持运行时热重载并自动去重；`hotkey_*`、`auto_start`、`volume` 修改后需重启。颜色、透明度和窗口位置请通过程序界面修改。
 5. WAV、FLAC、MP3 文件放在 `config.toml` 所在目录，三种格式都可省略扩展名。名称相同时按 WAV → FLAC → MP3 的顺序选择；写明扩展名则使用指定文件。不允许绝对路径或子目录。
 6. 程序优先在 EXE 目录保存配置；若该目录不可写，则自动使用 `%LOCALAPPDATA%\TipClock\config.toml`。首次创建配置时，会在同一目录释放示例音频 `demo.mp3`。
 7. `volume` 仅控制 Tip Clock 自身的音频输出，不会修改 Windows 系统音量。

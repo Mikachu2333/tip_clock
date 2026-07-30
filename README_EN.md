@@ -30,7 +30,7 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 1. This is free software released under the MIT license.
 2. The clock display refreshes every 0.5 seconds to minimize system load.
 3. Time format is `HH:MM:SS` (24-hour), e.g. `08:00:00`. Single digits must be zero-padded.
-4. Changes to `config.toml` require a program restart to take effect.
+4. `display_time` and `[[schedule]]` are hot-reloaded and deduplicated at runtime. Changes to `hotkey_*`, `auto_start`, and `volume` require a restart. Change colors, opacity, and window position through the application.
 5. WAV, FLAC, and MP3 files must be in the `config.toml` directory, and all three may omit the extension. For identical stems, lookup order is WAV → FLAC → MP3; an explicit extension selects that file. Absolute paths and subdirectories are rejected.
 6. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically. When configuration is first created, `demo.mp3` is extracted into the same directory.
 7. `volume` controls only Tip Clock's audio stream and never changes the Windows system volume.

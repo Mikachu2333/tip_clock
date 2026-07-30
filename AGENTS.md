@@ -33,7 +33,7 @@ res/
 
 ## Configuration (`config.toml`)
 
-- Read **once at startup**. Uses the EXE directory when writable, otherwise `%LOCALAPPDATA%\TipClock`. No hot-reload; restart to apply changes.
+- Uses the EXE directory when writable, otherwise `%LOCALAPPDATA%\TipClock`. Limited hot reload: `display_time` and deduplicated `[[schedule]]`; hotkey/auto-start/volume require restart; colors/opacity/window position are runtime-owned.
 - Auto-created on first run with a language-aware template (ZH or EN); `demo.mp3` is extracted beside it.
 - Auto-corrects CJK full-width punctuation and bare time values.
 - Missing keys filled from `GeneralConfig::default()`.

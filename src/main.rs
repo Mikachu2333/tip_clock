@@ -674,6 +674,8 @@ fn main() {
 
     let mut last_checked_second: Option<u32> = None;
     let mut last_menu_refresh = std::time::Instant::now();
+    let mut last_config_check = std::time::Instant::now();
+    let mut last_reload_error: Option<String> = None;
 
     // Initial menu refresh
     refresh_menu_items(&tray, &next_item, &pause_item, &skip_item, &show_item);
@@ -693,6 +695,39 @@ fn main() {
         let now = Local::now();
         let current = (now.hour(), now.minute(), now.second());
         let current_second = current.0 * 3600 + current.1 * 60 + current.2;
+
+        // Limited hot reload: only display_time and schedule/audio are accepted
+        // from external file edits. Other runtime-owned fields remain unchanged.
+        if last_config_check.elapsed() >= Duration::from_secs(1) {
+            last_config_check = std::time::Instant::now();
+            let reload_result = {
+                let mut cfg = CONFIG.get().unwrap().lock().unwrap();
+                match cfg.reload_hot_fields() {
+                    Ok(changed) => {
+                        if changed {
+                            gui::update_config(&cfg.general);
+                        }
+                        Ok(changed)
+                    }
+                    Err(error) => Err(error),
+                }
+            };
+            match reload_result {
+                Ok(changed) => {
+                    if changed {
+                        debug_log("[main] config hot reload applied\n");
+                        NEED_REFRESH.get().unwrap().store(true, Ordering::Relaxed);
+                    }
+                    last_reload_error = None;
+                }
+                Err(error) => {
+                    if last_reload_error.as_deref() != Some(&error) {
+                        debug_log(format!("[main] config hot reload ignored: {error}\n"));
+                        last_reload_error = Some(error);
+                    }
+                }
+            }
+        }
 
         // Menu state refresh (immediate if needed, otherwise periodic)
         if NEED_REFRESH.get().unwrap().swap(false, Ordering::Relaxed) {
