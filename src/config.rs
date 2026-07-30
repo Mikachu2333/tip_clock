@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -283,24 +285,54 @@ fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
+    const MAX_REPLACE_ATTEMPTS: u32 = 6;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+
     let parent = path.parent().ok_or("Config path has no parent directory")?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("Failed to create config directory: {e}"))?;
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+
+    // A per-process sequence prevents stale files or two different target
+    // names from reusing the same temporary path.
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Config file name is not valid UTF-8")?;
+    let temp = parent.join(format!(
+        ".{file_name}.tmp-{}-{sequence}",
+        std::process::id()
+    ));
+
     let result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp)?;
-        file.write_all(data)?;
-        file.sync_all()?;
-        if path.exists() {
-            let destination = crate::audio::to_wide(&path.to_string_lossy());
-            let replacement = crate::audio::to_wide(&temp.to_string_lossy());
+        // Keep the File in a nested scope. sync_all flushes data but does not
+        // close the Windows handle; ReplaceFileW requires the replacement file
+        // to be closed before it can rename it.
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            file.write_all(data)?;
+            file.sync_all()?;
+        }
+
+        if !path.exists() {
+            return std::fs::rename(&temp, path);
+        }
+
+        let destination = crate::audio::to_wide(&path.to_string_lossy());
+        let replacement = crate::audio::to_wide(&temp.to_string_lossy());
+        let mut delay_ms = 15u64;
+        for attempt in 1..=MAX_REPLACE_ATTEMPTS {
             // SAFETY: both UTF-16 paths are NUL-terminated and remain alive
-            // during the synchronous call. No backup/exclusion buffers are used.
+            // during this synchronous call. The replacement file handle was
+            // closed above; no backup/exclusion buffers are used.
             if unsafe {
                 ReplaceFileW(
                     destination.as_ptr(),
@@ -310,16 +342,28 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                 )
-            } == 0
+            } != 0
             {
-                return Err(std::io::Error::last_os_error());
+                return Ok(());
             }
-            Ok(())
-        } else {
-            std::fs::rename(&temp, path)
+
+            let error = std::io::Error::last_os_error();
+            let retryable = matches!(
+                error.raw_os_error(),
+                Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+            );
+            if !retryable || attempt == MAX_REPLACE_ATTEMPTS {
+                return Err(error);
+            }
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            delay_ms *= 2;
         }
+        unreachable!("replace loop always returns")
     })();
+
     if result.is_err() {
+        // Best effort only: retain the original error, which is more useful
+        // than a secondary cleanup failure. Unique names avoid later clashes.
         let _ = std::fs::remove_file(&temp);
     }
     result.map_err(|e| {
