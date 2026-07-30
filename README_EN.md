@@ -28,12 +28,11 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 ## Notes
 
 1. This is free software released under the MIT license.
-2. The clock display refreshes every 0.5 seconds to minimize system load.
-3. Time format is `HH:MM:SS` (24-hour), e.g. `08:00:00`. Single digits must be zero-padded.
-4. `display_time` and `[[schedule]]` are hot-reloaded and deduplicated at runtime. Changes to `hotkey_*`, `auto_start`, and `volume` require a restart. Change colors, opacity, and window position through the application.
-5. WAV, FLAC, and MP3 files must be in the `config.toml` directory, and all three may omit the extension. For identical stems, lookup order is WAV → FLAC → MP3; an explicit extension selects that file. Absolute paths and subdirectories are rejected.
-6. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically. When configuration is first created, `demo.mp3` is extracted into the same directory.
-7. `volume` controls only Tip Clock's audio stream and never changes the Windows system volume.
+2. Time format is `HH:MM:SS` (24-hour), e.g. `08:00:00`. Single digits must be zero-padded.
+3. `display_time` and `[[schedule]]` are hot-reloaded and deduplicated at runtime. Changes to `hotkey_*`, `auto_start`, and `volume` require a restart. Change colors, opacity, and window position through the application.
+4. WAV, FLAC, and MP3 files must be in the `config.toml` directory, and all three may omit the extension. For identical stems, lookup order is WAV → FLAC → MP3; an explicit extension selects that file. Absolute paths and subdirectories are rejected.
+5. The EXE directory is preferred for configuration. If it is not writable, `%LOCALAPPDATA%\TipClock\config.toml` is used automatically. When configuration is first created, `demo.mp3` is extracted into the same directory.
+6. `volume` controls only Tip Clock's audio stream and never changes the Windows system volume.
 
 ---
 
@@ -110,21 +109,30 @@ time = "13:42:57"
 - Audio files reside beside `config.toml`.
 - `demo.mp3` is extracted when the initial configuration is created.
 
+### Multiple Reminders at the Same Time
+
+Entries with the same `time` form one reminder group. If one timestamp contains a silent entry plus `audio = "A"` and `audio = "B"`:
+
+- The clock appears once; the silent entry does not create another popup.
+- A and B are queued in configuration order, not played simultaneously or interrupted.
+- Identical `time + audio` entries are deduplicated; different audio at the same time is retained.
+- “Skip next reminder group” skips the whole timestamp group. A group missed while paused is not replayed.
+
 ---
 
 ## Tray Menu
 
-| Item                    | Action                                       |
-| ----------------------- | -------------------------------------------- |
-| Next                    | Show next reminder time and type             |
-| Show Clock / Hide Clock | Toggle clock visibility                      |
-| Skip Next               | Skip the upcoming reminder                   |
-| Pause / Resume          | Pause or resume all reminders                |
-| Edit Config             | Open config.toml in Notepad                  |
-| Text Color...           | Change clock text color                      |
-| Background Color...     | Change clock background color                |
-| Opacity                 | Adjust background opacity in a numeric field |
-| Exit                    | Quit the program                             |
+| Item                     | Action                                       |
+| ------------------------ | -------------------------------------------- |
+| Next                     | Show the next group time and audible marker  |
+| Show Clock / Hide Clock  | Toggle clock visibility                      |
+| Skip next reminder group | Skip every reminder at the next timestamp    |
+| Pause / Resume           | Pause or resume all reminders                |
+| Edit Config              | Open config.toml in Notepad                  |
+| Text Color...            | Change clock text color                      |
+| Background Color...      | Change clock background color                |
+| Opacity                  | Adjust background opacity in a numeric field |
+| Exit                     | Quit the program                             |
 
 **Left-click** the tray icon = toggle clock
 **Right-click** the tray icon = open menu

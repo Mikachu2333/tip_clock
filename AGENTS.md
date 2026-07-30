@@ -68,6 +68,7 @@ res/
 - **Auto-start**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry.
 - **i18n**: `GetUserDefaultLocaleName` detection (EN/ZH). Tray menu and config template follow system language.
 - **Tray**: left-click toggles clock; right-click shows context menu. `ChooseColorW` dialogs for text/background color.
-- **Skip next**: `SKIP_COUNT` atomic counter; click increments, main loop consumes on next schedule match. `NEED_REFRESH` atomic flag triggers immediate menu/tooltip update after skip consumption.
-- **Menu refresh**: `NEED_REFRESH` flag checked every main-loop iteration (≤500ms). `refresh_menu_items()` reads `SKIP_COUNT` via `next_label(cfg, skip_count)` to compute the _actually upcoming_ reminder, providing immediate visual feedback when user clicks "Skip next".
+- **Reminder groups**: all entries at one timestamp form a group; the clock shows once and audio files queue in config order. Duplicate `(time, audio)` entries are removed.
+- **Skip next group**: `SKIP_COUNT` counts timestamp groups, not entries. The scheduler consumes one count for the next matched group; menu preview groups by `total_sec` using identical semantics.
+- **Menu refresh**: `NEED_REFRESH` is checked every main-loop iteration (≤500ms), providing immediate preview updates after skipping a group.
 - **Debug logging**: `cfg!(debug_assertions)` only; `[main]` / `[gui]` / `[hotkey]` prefixes.

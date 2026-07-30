@@ -91,8 +91,8 @@ pub fn tr(key: TrKey) -> &'static str {
             Lang::Zh => "显示/隐藏时钟",
         },
         TrKey::SkipNext => match lang {
-            Lang::En => "Skip next",
-            Lang::Zh => "跳过下次",
+            Lang::En => "Skip next reminder group",
+            Lang::Zh => "跳过下一组提醒",
         },
         TrKey::Pause => match lang {
             Lang::En => "Pause",

@@ -124,8 +124,6 @@ pub struct ConfigFile {
 #[derive(Debug, Clone)]
 pub struct ParsedEntry {
     pub total_sec: u32,
-    pub hour: u32,
-    pub minute: u32,
     pub audio: Option<String>,
 }
 
@@ -603,8 +601,6 @@ impl Config {
                 }
                 Some(ParsedEntry {
                     total_sec: h * 3600 + m * 60 + s,
-                    hour: h,
-                    minute: m,
                     audio: entry.audio.clone(),
                 })
             })
@@ -1003,8 +999,8 @@ audio = "demo"
             },
         ];
         let parsed = Config::build_entries(&entries);
-        assert_eq!(parsed[0].hour, 8);
-        assert_eq!(parsed[1].hour, 14);
+        assert_eq!(parsed[0].total_sec, 8 * 3600);
+        assert_eq!(parsed[1].total_sec, 14 * 3600);
     }
 
     #[test]
@@ -1021,6 +1017,6 @@ audio = "demo"
         ];
         let parsed = Config::build_entries(&entries);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].hour, 8);
+        assert_eq!(parsed[0].total_sec, 8 * 3600);
     }
 }

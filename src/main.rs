@@ -19,7 +19,7 @@ use tray_icon::{
 };
 
 use audio::AudioPlayer;
-use config::{Config, ParsedEntry};
+use config::Config;
 
 const PROCESS_GUID: &str = "F44E29E669346E0CC3105EA440E85C00";
 
@@ -202,41 +202,46 @@ fn next_label(cfg: &Config, skip_count: u32) -> String {
     let now = Local::now();
     let current_sec = now.hour() * 3600 + now.minute() * 60 + now.second();
 
-    // Collect all entries after the current time, then skip `skip_count` of them.
-    // If none remain, wrap around to the start of the day (with tomorrow flag).
-    let filtered: Vec<&ParsedEntry> = cfg
+    // A reminder group is every entry sharing one timestamp. Build today's
+    // remaining groups followed by tomorrow's groups so skip_count has exactly
+    // the same group semantics as the scheduler.
+    let mut groups: Vec<(u32, bool)> = cfg
         .entries
         .iter()
-        .filter(|e| e.total_sec > current_sec)
+        .filter(|entry| entry.total_sec > current_sec)
+        .map(|entry| (entry.total_sec, false))
         .collect();
+    groups.dedup_by_key(|group| group.0);
 
-    let entry = if (skip_count as usize) < filtered.len() {
-        Some(filtered[skip_count as usize])
-    } else {
-        // All remaining entries today are skipped — show the first entry tomorrow.
-        cfg.entries.first()
+    let mut tomorrow: Vec<(u32, bool)> = cfg
+        .entries
+        .iter()
+        .map(|entry| (entry.total_sec, true))
+        .collect();
+    tomorrow.dedup_by_key(|group| group.0);
+    groups.extend(tomorrow);
+
+    let Some((total_sec, tomorrow)) = groups.get(skip_count as usize).copied() else {
+        return i18n::tr(i18n::TrKey::NoMoreReminders).to_string();
     };
-
-    match entry {
-        Some(e) => {
-            let tomorrow = e.total_sec <= current_sec;
-            let day = if tomorrow {
-                i18n::tr(i18n::TrKey::Tomorrow)
-            } else {
-                ""
-            };
-            format!(
-                "{}  {}{:02}:{:02}:{:02}{}",
-                i18n::tr(i18n::TrKey::NextReminder),
-                day,
-                e.hour,
-                e.minute,
-                e.total_sec % 60,
-                e.audio.as_deref().map_or("", |_| "  ♪")
-            )
-        }
-        None => i18n::tr(i18n::TrKey::NoMoreReminders).to_string(),
-    }
+    let has_audio = cfg
+        .entries
+        .iter()
+        .any(|entry| entry.total_sec == total_sec && entry.audio.is_some());
+    let day = if tomorrow {
+        i18n::tr(i18n::TrKey::Tomorrow)
+    } else {
+        ""
+    };
+    format!(
+        "{}  {}{:02}:{:02}:{:02}{}",
+        i18n::tr(i18n::TrKey::NextReminder),
+        day,
+        total_sec / 3600,
+        total_sec / 60 % 60,
+        total_sec % 60,
+        if has_audio { "  ♪" } else { "" }
+    )
 }
 
 fn refresh_menu_items(
