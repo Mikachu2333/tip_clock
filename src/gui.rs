@@ -119,9 +119,6 @@ unsafe extern "system" {
     ) -> i32;
     fn GdipSetTextRenderingHint(graphics: GpGraphics, mode: i32) -> i32;
     fn GdipSetSmoothingMode(graphics: GpGraphics, mode: i32) -> i32;
-    fn GdipGetCellAscent(font_family: GpFontFamily, style: i32, ascent: *mut u16) -> i32;
-    fn GdipGetCellDescent(font_family: GpFontFamily, style: i32, descent: *mut u16) -> i32;
-    fn GdipGetEmHeight(font_family: GpFontFamily, style: i32, em_height: *mut u16) -> i32;
 }
 
 // ───────────────────────────────────────────────
@@ -492,12 +489,13 @@ fn gdiplus_shutdown() {
     }
 }
 
-// Hardcoded font parameters — no longer read from config.
+// Hardcoded font parameters
 const FONT_NAME: &str = "Microsoft YaHei UI";
-const FONT_SIZE_PT: f32 = 18.0;
-const DISPLAY_STR: &str = "88:88:88";
-const PAD_X: i32 = 6;
-const PAD_Y: i32 = 6;
+const FONT_SIZE_PT: f32 = 24.0;
+const DISPLAY_STR: &str = "88 : 88 : 88";
+const PAD_X: i32 = 0;
+const PAD_Y: i32 = 0;
+const TEXT_Y_OFFSET: f32 = 2.0; // manual pixel shift to visually centre digit-only text
 
 // ───────────────────────────────────────────────
 //  Clock window state
@@ -505,8 +503,8 @@ const PAD_Y: i32 = 6;
 
 const ANIM_TIMER_ID: usize = 2;
 const ANIM_INTERVAL_MS: u32 = 16;
-const SLIDE_IN_MS: u32 = 1000;
-const SLIDE_OUT_MS: u32 = 2000;
+const SLIDE_IN_MS: u32 = 800;
+const SLIDE_OUT_MS: u32 = 1500;
 const SLIDE_DISTANCE: i32 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,9 +534,6 @@ struct GuiState {
     shown_at: Option<std::time::Instant>,
     width: i32,
     height: i32,
-    /// Pixel correction added to y_off so that digits (no ascenders/descenders)
-    /// are visually centered rather than the font cell metric centre.
-    text_y_correction: f32,
     // GDI objects
     mem_dc: RawPtr,
     bitmap: RawPtr,
@@ -590,8 +585,12 @@ unsafe extern "system" fn clock_wndproc(
                         }
                     } else if timer_id == state.timer_update_id {
                         let now = Local::now();
-                        let time_str =
-                            format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+                        let time_str = format!(
+                            "{:02} : {:02} : {:02}",
+                            now.hour(),
+                            now.minute(),
+                            now.second()
+                        );
                         if time_str != state.last_time_str {
                             state.last_time_str = time_str;
                             unsafe {
@@ -743,7 +742,12 @@ unsafe fn process_animation_frame(state: &mut GuiState) {
 
     // Update time and redraw with current alpha.
     let now = Local::now();
-    let new_time = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    let new_time = format!(
+        "{:02} : {:02} : {:02}",
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
     if new_time != state.last_time_str {
         state.last_time_str = new_time;
     }
@@ -836,14 +840,11 @@ unsafe fn redraw_layered_window_with_alpha(state: &mut GuiState, constant_alpha:
         let mut text_brush: GpBrush = std::ptr::null_mut();
         if GdipCreateSolidFill(text_argb, &mut text_brush) == GDI_PLUS_OK {
             let text_wide = to_wide(&state.last_time_str);
-            // Use the full window area as the layout rectangle.  GDI+ centres
-            // the *font cell* inside it, which makes pure‑digit strings sit
-            // slightly too high.  Shift the rectangle down by the pre‑computed
-            // per‑font correction so the digit mass appears visually centred.
-            let correction = state.text_y_correction;
+            // Shift the layout rectangle down by a fixed offset so digit-only
+            // strings (no ascenders/descenders) appear visually centred.
             let layout_rect = RectF {
                 x: 0.0,
-                y: correction,
+                y: TEXT_Y_OFFSET,
                 width: w as f32,
                 height: h as f32,
             };
@@ -984,7 +985,12 @@ unsafe fn show_clock_internal(state: &mut GuiState) {
         let cur_y = rect.top;
 
         let now = Local::now();
-        state.last_time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+        state.last_time_str = format!(
+            "{:02}：{:02}：{:02}",
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
 
         state.animation = Some(Animation {
             kind: AnimKind::Enter,
@@ -1110,36 +1116,9 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         GdipSetStringFormatLineAlign(gp_sf, STRING_ALIGN_CENTER);
     }
 
-    // ── Compute vertical correction for visual centering ────
-    // GDI+ STRING_ALIGN_CENTER centres the *font cell* (ascent+descent)
-    // in the layout rectangle.  For digit-only strings like "88:88:88"
-    // that have no ascenders / descenders, the visible glyphs sit lower
-    // than the cell centre — they appear slightly too high.
-    // We compute a per‑font correction (in pixels) that shifts the
-    // layout rectangle down so the visible digit mass is centred.
-    let text_y_correction: f32 = {
-        let mut ascent: u16 = 0;
-        let mut descent: u16 = 0;
-        let mut em_h: u16 = 0;
-        unsafe {
-            GdipGetCellAscent(gp_family, FONT_STYLE_REGULAR, &mut ascent);
-            GdipGetCellDescent(gp_family, FONT_STYLE_REGULAR, &mut descent);
-            GdipGetEmHeight(gp_family, FONT_STYLE_REGULAR, &mut em_h);
-        }
-        if em_h > 0 {
-            let scale = scaled_font_size / em_h as f32;
-            // cell centre relative to baseline (positive = below baseline in device space)
-            let cell_centre = (ascent as f32 - descent as f32) / 2.0 * scale;
-            // approximate digit visual centre: 0.72 × ascent (cap‑height / 2)
-            let digit_centre = ascent as f32 * 0.36 * scale;
-            // correction = how far the digit centre is *above* the cell centre
-            // (>0 → push layout rect down; <0 → push up)
-            (cell_centre - digit_centre).max(0.0)
-        } else {
-            0.0
-        }
-    };
-
+    // Vertical offset for digit-only text: GDI+ centres the font cell,
+    // digits have no ascenders/descenders so they sit slightly high.
+    // A fixed +2 px shift is applied at render time (see TEXT_Y_OFFSET).
     // Measure the display string extent
     let display_wide = to_wide(DISPLAY_STR);
     // Dynamic measurement using a temporary GDI+ bitmap (top-down DIB).
@@ -1245,18 +1224,18 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
             text_w = bounding.width.ceil() as i32 + WIDTH_PAD;
             text_h = bounding.height.ceil() as i32 + HEIGHT_PAD;
         } else {
-            // Fallback — target window size 180×64 with PAD_X=6, PAD_Y=6
-            text_w = 168;
-            text_h = 54;
+            // Fallback — conservative window size
+            text_w = 240;
+            text_h = 60;
         }
 
         unsafe {
             GdipDeleteGraphics(mg);
         }
     } else {
-        // Fallback — target window size 180×64 with PAD_X=6, PAD_Y=6
-        text_w = 168;
-        text_h = 52;
+        // Fallback — conservative window size
+        text_w = 240;
+        text_h = 60;
     }
 
     unsafe {
@@ -1424,7 +1403,6 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         shown_at: None,
         width: win_w,
         height: win_h,
-        text_y_correction,
         mem_dc: RawPtr::from_ptr(mem_dc),
         bitmap: RawPtr::from_ptr(bitmap),
         old_bitmap: RawPtr::from_ptr(old_bitmap),
