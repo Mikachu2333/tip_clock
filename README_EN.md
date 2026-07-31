@@ -6,6 +6,8 @@ A lightweight Windows desktop clock that auto-hides at the screen edge and pops 
 
 ---
 
+![Example](./PixPin_2026-07-31_09-22-28.mp4)
+
 ## Features
 
 | Feature             | Description                                                              |
@@ -53,7 +55,7 @@ cargo build --release
 
 ## Configuration
 
-Edit `config.toml` in the active configuration directory and restart the program. If the EXE directory is not writable, the active directory is `%LOCALAPPDATA%\TipClock`.
+Edit `config.toml` in the active configuration directory. `display_time` and `[[schedule]]` hot-reload within about one second; changes to `hotkey_*`, `auto_start`, and `volume` require a restart. Change colors, background opacity, and window position through the application; those values are written back immediately. If the EXE directory is not writable, the active directory is `%LOCALAPPDATA%\TipClock`.
 
 ```toml
 [general]
@@ -132,6 +134,7 @@ Entries with the same `time` form one reminder group. If one timestamp contains 
 | Text Color...            | Change clock text color                      |
 | Background Color...      | Change clock background color                |
 | Opacity                  | Adjust background opacity in a numeric field |
+| Restart                  | Restart Tip Clock                            |
 | Exit                     | Quit the program                             |
 
 **Left-click** the tray icon = toggle clock
@@ -161,7 +164,8 @@ src/
 └── i18n.rs      — Multi-language support (Chinese / English)
 res/
 ├── demo.mp3     — Example audio extracted with the initial config
-└── ico_raw      — Tray icon (256×256 RGBA)
+├── icon_raw     — Tray and application icon (256×256 raw RGBA)
+└── icon.afdesign — Editable icon source
 ```
 
 ---

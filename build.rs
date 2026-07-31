@@ -11,7 +11,7 @@ fn main() {
     assert_eq!(
         raw.len(),
         256 * 256 * 4,
-        "ico_raw must be exactly 256×256 RGBA (262144 bytes)"
+        "icon_raw must be exactly 256×256 RGBA (262144 bytes)"
     );
     let ico_path = out_dir.join("icon.ico");
     let ico_data = rgba_to_ico(raw, 256, 256);

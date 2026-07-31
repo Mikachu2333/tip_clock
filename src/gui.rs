@@ -493,9 +493,8 @@ fn gdiplus_shutdown() {
 const FONT_NAME: &str = "Microsoft YaHei UI";
 const FONT_SIZE_PT: f32 = 24.0;
 const DISPLAY_STR: &str = "88 : 88 : 88";
-const PAD_X: i32 = 0;
-const PAD_Y: i32 = 0;
-const TEXT_Y_OFFSET: f32 = 2.0; // manual pixel shift to visually centre digit-only text
+// GDI+ centers the font cell, so digit-only text needs a small fixed shift.
+const TEXT_Y_OFFSET: f32 = 2.0;
 
 // ───────────────────────────────────────────────
 //  Clock window state
@@ -1116,13 +1115,8 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         GdipSetStringFormatLineAlign(gp_sf, STRING_ALIGN_CENTER);
     }
 
-    // Vertical offset for digit-only text: GDI+ centres the font cell,
-    // digits have no ascenders/descenders so they sit slightly high.
-    // A fixed +2 px shift is applied at render time (see TEXT_Y_OFFSET).
-    // Measure the display string extent
+    // Measure the widest display string in a generous temporary top-down DIB.
     let display_wide = to_wide(DISPLAY_STR);
-    // Dynamic measurement using a temporary GDI+ bitmap (top-down DIB).
-    // Use a generous area to avoid clipping at any DPI.
     let measure_w = 1200i32;
     let measure_h = 200i32;
     let bmi = BITMAPINFOHEADER {
@@ -1244,8 +1238,8 @@ pub fn create_clock_window(cfg: &GeneralConfig) -> Result<(), String> {
         DeleteDC(tmp_dc);
     }
 
-    let win_w = text_w + PAD_X * 2;
-    let win_h = text_h + PAD_Y * 2;
+    let win_w = text_w;
+    let win_h = text_h;
 
     // Clean up temporary GDI+ objects
     unsafe {

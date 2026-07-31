@@ -6,6 +6,8 @@
 
 ---
 
+![Example](./PixPin_2026-07-31_09-22-28.mp4)
+
 ## 功能
 
 | 功能          | 说明                                                                 |
@@ -51,7 +53,7 @@ cargo build --release
 
 ## 配置说明
 
-编辑实际配置目录中的 `config.toml`，保存后重启程序生效。EXE 目录不可写时，实际配置目录为 `%LOCALAPPDATA%\TipClock`。
+编辑实际配置目录中的 `config.toml`。`display_time` 和 `[[schedule]]` 保存后约 1 秒内热重载；`hotkey_*`、`auto_start`、`volume` 修改后需重启。颜色、背景不透明度和窗口位置应通过程序界面修改，程序会立即写回配置文件。EXE 目录不可写时，实际配置目录为 `%LOCALAPPDATA%\TipClock`。
 
 ```toml
 [general]
@@ -130,6 +132,7 @@ time = "13:42:57"
 | 文字颜色...         | 更改时钟文字颜色               |
 | 背景颜色...         | 更改时钟背景颜色               |
 | 不透明度            | 通过数值输入框调整背景不透明度 |
+| 重启                | 重启 Tip Clock                 |
 | 退出                | 退出程序                       |
 
 **左键点击托盘图标** = 切换时钟显示/隐藏
@@ -159,7 +162,8 @@ src/
 └── i18n.rs      — 多语言支持（中文/英文）
 res/
 ├── demo.mp3     — 首次创建配置时释放的示例音频
-└── ico_raw      — 托盘图标（256×256 RGBA）
+├── icon_raw     — 托盘与程序图标（256×256 原始 RGBA）
+└── icon.afdesign — 可编辑的图标源文件
 ```
 
 ---
