@@ -642,7 +642,7 @@ fn main() {
     }
 
     // Create tray icon from embedded 256×256 RGBA raw data
-    let icon_raw: &[u8] = include_bytes!("../res/ico_raw");
+    let icon_raw: &[u8] = include_bytes!("../res/icon_raw");
     let icon =
         tray_icon::Icon::from_rgba(icon_raw.to_vec(), 256, 256).expect("tray icon from raw RGBA");
 

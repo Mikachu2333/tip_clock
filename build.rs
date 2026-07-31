@@ -7,7 +7,7 @@ fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
     // ── Generate .ico from raw 256×256 RGBA data ──────────
-    let raw = include_bytes!("res/ico_raw");
+    let raw = include_bytes!("res/icon_raw");
     assert_eq!(
         raw.len(),
         256 * 256 * 4,
